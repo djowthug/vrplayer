@@ -22,12 +22,31 @@ O HTTPS é obrigatório para o Safari liberar o giroscópio.
 
 > Ao publicar mudanças, aumente `CACHE` em `sw.js` (ex.: `vrplayer-v2`).
 
-## Testar no PC
+## Servidor no PC (Fase 2 — Streaming sem ocupar espaço no iPhone)
 
+Permite transmitir vídeos pesados direto do disco rígido do PC para o iPhone pela rede Wi-Fi, com suporte completo a HTTP Range Requests e giroscópio via HTTPS local.
+
+### 1. Gerar certificados HTTPS (Apenas uma vez)
 ```powershell
-npx -y serve .
+npm run cert
 ```
-Abra o endereço mostrado. No PC, o giroscópio não existe: arraste com o mouse.
+O script instala o `mkcert` (se necessário), gera os certificados para o IP do seu computador e salva o certificado raiz para o iPhone.
+
+### 2. Iniciar o servidor
+```powershell
+# Usa a pasta padrão ./videos
+npm start
+
+# Ou aponte para qualquer pasta de vídeos no seu computador:
+node server.js "D:\Meus Videos VR"
+```
+
+### 3. Conectar pelo iPhone
+1. No Safari do iPhone, instale o certificado acessando o link exibido no terminal (ex: `http://192.168.3.2:8080/install-cert`).
+   - Vá em **Ajustes → Perfil Baixado → Instalar**.
+   - Em **Ajustes → Geral → Sobre → Certificados Confiáveis**, ative a chavinha do certificado.
+2. Abra o app (seja no GitHub Pages ou em `https://192.168.3.2:8443/`), digite o IP no campo **Vídeos do Computador** e toque em **Conectar**.
+3. Toque em qualquer vídeo da lista para iniciar a transmissão imediata!
 
 ## Uso
 

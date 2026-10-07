@@ -34,6 +34,7 @@
       <symbol id="i-speaker" viewBox="0 0 24 24"><path d="M3.5 9.2h3.2L11.5 5v14l-4.8-4.2H3.5z" fill="currentColor"/><path d="M15 9a4.2 4.2 0 0 1 0 6M17.8 6.3a8 8 0 0 1 0 11.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></symbol>
       <symbol id="i-muted" viewBox="0 0 24 24"><path d="M3.5 9.2h3.2L11.5 5v14l-4.8-4.2H3.5z" fill="currentColor"/><path d="M15.5 9.5l5 5M20.5 9.5l-5 5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></symbol>
       <symbol id="i-share" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M8 7l4-4 4 4"/><path d="M7 11H6a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6a2 2 0 0 0-2-2h-1"/></g></symbol>
+      <symbol id="i-desktop" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="3.5" width="19" height="13" rx="2.5"/><path d="M8 20.5h8M12 16.5v4"/></g></symbol>
     </defs>
   </svg>
 
@@ -62,9 +63,25 @@
           <ellipse cx="126" cy="46" rx="8" ry="5" fill="rgba(255,255,255,.35)"/>
         </svg>
       </div>
-      <label id="open-file-btn" class="btn-primary" for="file-input">Abrir vídeo</label>
+      <label id="open-file-btn" class="btn-primary" for="file-input">Abrir vídeo do iPhone</label>
       <input id="file-input" type="file" accept="video/*,.mp4,.mov,.m4v,.webm" hidden>
       <p class="footnote">O vídeo é reproduzido no próprio aparelho e não é enviado para lugar nenhum.</p>
+    </section>
+
+    <!-- Servidor local no PC (Fase 2) -->
+    <section id="pc-server-section" class="group">
+      <h2 class="group-title">Vídeos do Computador (Rede Local)</h2>
+      <div class="list">
+        <div class="list-item pc-server-connect">
+          <span class="list-icon" style="--c:#5856d6"><svg><use href="#i-desktop"/></svg></span>
+          <div class="list-text" style="flex:1">
+            <input id="server-url-input" type="text" placeholder="https://192.168.x.x:8443" class="server-input" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off">
+          </div>
+          <button id="btn-connect-server" class="btn-connect">Conectar</button>
+        </div>
+      </div>
+      <div id="pc-video-list" class="list" style="margin-top: 10px;" hidden></div>
+      <p id="pc-server-msg" class="group-footer">Transmita vídeos do seu PC via Wi-Fi sem gastar a memória do iPhone.</p>
     </section>
 
     <section id="install-tip" class="group" hidden>

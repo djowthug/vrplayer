@@ -35,6 +35,10 @@ const els = {
   hudL: $('hud-l'),
   hudR: $('hud-r'),
   toast: $('toast'),
+  serverUrlInput: $('server-url-input'),
+  btnConnectServer: $('btn-connect-server'),
+  pcVideoList: $('pc-video-list'),
+  pcServerMsg: $('pc-server-msg'),
 };
 const video = els.video;
 
@@ -155,20 +159,32 @@ function waitFor(el, event, timeout = 15000) {
   });
 }
 
-async function openFile(file) {
+function openFile(file) {
+  openVideoSource({
+    url: URL.createObjectURL(file),
+    name: file.name,
+    size: file.size,
+    isBlob: true,
+  });
+}
+
+async function openVideoSource({ url, name, size = 0, isBlob = false }) {
   ensureEngine();
   releaseVideo();
 
-  state.fileName = file.name;
-  state.fileKey = `fmt:${file.name}:${file.size}`;
+  state.fileName = name;
+  state.fileKey = `fmt:${name}:${size}`;
   state.userChangedFormat = false;
   state.autoAnalyzePending = false;
-  els.title.textContent = file.name;
+  els.title.textContent = name;
 
   showPlayer();
 
-  state.objectUrl = URL.createObjectURL(file);
-  video.src = state.objectUrl;
+  if (isBlob) state.objectUrl = url;
+  else state.objectUrl = null;
+
+  video.crossOrigin = 'anonymous';
+  video.src = url;
   video.load();
 
   try {
@@ -183,7 +199,7 @@ async function openFile(file) {
   if (saved) {
     applyFormat(saved, 'Formato salvo para este vídeo');
   } else {
-    const first = guessFormat(file.name, video.videoWidth, video.videoHeight, null);
+    const first = guessFormat(name, video.videoWidth, video.videoHeight, null);
     applyFormat({ ...first, swap: false }, captionFor(first.source));
     if (first.source !== 'nome') {
       const analysis = await analyzeVideo();
@@ -609,6 +625,88 @@ function closePlayer() {
   els.home.hidden = false;
 }
 
+// ---------------- Servidor no PC (Fase 2) ----------------
+async function connectServer(rawUrl, silent = false) {
+  let url = (rawUrl || '').trim();
+  if (!url) {
+    if (!silent) toast('Digite o endereço do servidor (ex: https://192.168.x.x:8443)');
+    return;
+  }
+  if (!/^https?:\/\//i.test(url)) {
+    url = (location.protocol === 'https:' ? 'https://' : 'http://') + url;
+  }
+  url = url.replace(/\/+$/, '');
+  els.serverUrlInput.value = url;
+
+  els.btnConnectServer.textContent = '...';
+  try {
+    const res = await fetch(`${url}/api/videos`, { signal: AbortSignal.timeout(4500) });
+    if (!res.ok) throw new Error('Status ' + res.status);
+    const data = await res.json();
+    store.set('server_url', url);
+    els.btnConnectServer.textContent = 'Conectado';
+    els.btnConnectServer.classList.add('connected');
+    renderPcVideos(data.videos || [], url);
+    if (!silent) toast(`Conectado! ${data.count} vídeo(s) encontrado(s).`);
+  } catch (err) {
+    els.btnConnectServer.textContent = 'Conectar';
+    els.btnConnectServer.classList.remove('connected');
+    els.pcVideoList.hidden = true;
+    if (!silent) {
+      toast('Não foi possível conectar. Verifique o IP, porta e o certificado HTTPS.');
+    }
+  }
+}
+
+function renderPcVideos(videos, baseUrl) {
+  const container = els.pcVideoList;
+  container.innerHTML = '';
+  if (!videos || videos.length === 0) {
+    container.innerHTML = '<div class="list-item"><div class="list-text"><small>Nenhum vídeo encontrado na pasta do PC.</small></div></div>';
+    container.hidden = false;
+    return;
+  }
+
+  for (const v of videos) {
+    const item = document.createElement('div');
+    item.className = 'list-item clickable';
+
+    const hint = v.formatHint || {};
+    let iconLabel = 'VR';
+    let iconColor = '#0a84ff';
+    if (hint.projection === '360') { iconLabel = '360'; iconColor = '#0a84ff'; }
+    else if (hint.projection === '180') { iconLabel = '180'; iconColor = '#5e5ce6'; }
+    else if (hint.projection === 'fisheye') { iconLabel = '◐'; iconColor = '#ff9f0a'; }
+    else if (hint.layout === 'sbs' || hint.layout === 'tb') { iconLabel = '3D'; iconColor = '#30d158'; }
+
+    item.innerHTML = `
+      <span class="list-icon" style="--c:${iconColor}">${iconLabel}</span>
+      <div class="list-text">
+        <strong>${v.name}</strong>
+        <small>${v.size}</small>
+      </div>
+    `;
+
+    item.addEventListener('click', () => {
+      const fullUrl = `${baseUrl}${v.url}`;
+      openVideoSource({
+        url: fullUrl,
+        name: v.name,
+        size: v.sizeBytes,
+        isBlob: false,
+      });
+    });
+
+    container.appendChild(item);
+  }
+  container.hidden = false;
+}
+
+els.btnConnectServer?.addEventListener('click', () => connectServer(els.serverUrlInput.value));
+els.serverUrlInput?.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') connectServer(els.serverUrlInput.value);
+});
+
 // ---------------- Inicialização ----------------
 (function init() {
   const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) ||
@@ -623,12 +721,26 @@ function closePlayer() {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
 
-  // ?src=URL abre um vídeo por endereço (testes / futuro servidor no PC).
+  // Configuração do Servidor no PC
+  const savedServer = store.get('server_url');
+  if (savedServer) {
+    els.serverUrlInput.value = savedServer;
+    connectServer(savedServer, true);
+  } else if (location.hostname !== 'localhost' && !location.hostname.endsWith('github.io')) {
+    const currentOrigin = location.origin;
+    els.serverUrlInput.value = currentOrigin;
+    connectServer(currentOrigin, true);
+  }
+
+  // ?src=URL abre um vídeo por endereço direto
   const src = new URLSearchParams(location.search).get('src');
   if (src) {
-    fetch(src)
-      .then((r) => (r.ok ? r.blob() : Promise.reject(new Error(r.status))))
-      .then((blob) => openFile(new File([blob], decodeURIComponent(src.split('/').pop().split('?')[0]), { type: blob.type })))
-      .catch(() => toast('Não foi possível baixar o vídeo do endereço informado.'));
+    const name = decodeURIComponent(src.split('/').pop().split('?')[0]);
+    openVideoSource({
+      url: src,
+      name,
+      size: 0,
+      isBlob: false,
+    });
   }
 })();

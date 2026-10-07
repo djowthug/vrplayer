@@ -114,6 +114,33 @@ svg { display: block; }
   top: 0; right: 0; left: 60px;
   border-top: .5px solid var(--sep);
 }
+.list-item.clickable { cursor: pointer; transition: background-color .15s; }
+.list-item.clickable:active { background-color: var(--fill); }
+
+.server-input {
+  width: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--label);
+  font-size: 15px;
+  font-family: inherit;
+}
+.server-input::placeholder { color: var(--label3); }
+
+.btn-connect {
+  background: var(--accent);
+  color: #fff;
+  border-radius: 14px;
+  padding: 6px 14px;
+  font-size: 14px;
+  font-weight: 600;
+  flex: none;
+  transition: opacity .15s, transform .15s var(--ease-ios);
+}
+.btn-connect:active { opacity: .7; transform: scale(.95); }
+.btn-connect.connected { background: var(--green); }
+
 .list-icon {
   flex: none;
   width: 30px; height: 30px;

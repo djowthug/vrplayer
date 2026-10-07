@@ -1,0 +1,14 @@
+{
+  "name": "vrplayer",
+  "version": "1.0.0",
+  "description": "VR Player PWA para iPhone com suporte a streaming local do PC",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "cert": "node scripts/setup-cert.js"
+  },
+  "keywords": ["vr", "player", "threejs", "pwa", "streaming", "iphone"],
+  "author": "djowthug",
+  "license": "MIT"
+}
