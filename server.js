@@ -243,8 +243,10 @@ if (hasCert) {
     }
   });
   httpServer.listen(config.httpPort, '0.0.0.0', () => {
-    console.log(`\n📲 Link rápido para instalar o Certificado no iPhone:`);
-    console.log(`   👉 http://${primaryIP}:${config.httpPort}/install-cert`);
+    console.log(`\n📲 Link rápido para instalar o Certificado no iPhone (abra no Safari):`);
+    for (const ip of localIPs) {
+      console.log(`   👉 http://${ip}:${config.httpPort}/install-cert`);
+    }
   });
 } else {
   const httpServer = http.createServer(handleRequest);

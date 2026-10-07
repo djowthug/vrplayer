@@ -22,23 +22,47 @@ function getLocalIPs() {
   return [...new Set(ips)];
 }
 
-function isCommandAvailable(cmd) {
+function findMkcert() {
   try {
-    execSync(`where ${cmd}`, { stdio: 'ignore' });
-    return true;
-  } catch {
-    return false;
+    const out = execSync('where mkcert', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    if (out) return 'mkcert';
+  } catch {}
+
+  const localAppData = process.env.LOCALAPPDATA || '';
+  const candidates = [
+    path.join(localAppData, 'Microsoft', 'WinGet', 'Links', 'mkcert.exe'),
+  ];
+
+  const packagesDir = path.join(localAppData, 'Microsoft', 'WinGet', 'Packages');
+  if (fs.existsSync(packagesDir)) {
+    try {
+      const dirs = fs.readdirSync(packagesDir);
+      for (const d of dirs) {
+        if (d.toLowerCase().includes('mkcert')) {
+          const exe = path.join(packagesDir, d, 'mkcert.exe');
+          if (fs.existsSync(exe)) candidates.push(exe);
+        }
+      }
+    } catch {}
   }
+
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return `"${c}"`;
+  }
+  return null;
 }
 
 console.log('\n=========================================');
 console.log('   VR Player — Configuração de HTTPS Local');
 console.log('=========================================\n');
 
-if (!isCommandAvailable('mkcert')) {
+let mkcertBin = findMkcert();
+
+if (!mkcertBin) {
   console.log('🔍 mkcert não encontrado. Instalando via winget...');
   try {
     execSync('winget install FiloSottile.mkcert --accept-source-agreements --accept-package-agreements', { stdio: 'inherit' });
+    mkcertBin = findMkcert() || 'mkcert';
     console.log('✅ mkcert instalado com sucesso!');
   } catch (err) {
     console.error('❌ Não foi possível instalar o mkcert automaticamente via winget.');
@@ -46,27 +70,35 @@ if (!isCommandAvailable('mkcert')) {
     console.error('   winget install FiloSottile.mkcert');
     process.exit(1);
   }
+} else {
+  console.log(`✅ mkcert localizado: ${mkcertBin}`);
 }
 
 try {
-  console.log('🔒 Registrando Autoridade Certificadora local...');
-  execSync('mkcert -install', { stdio: 'inherit' });
+  const caRoot = path.join(process.env.LOCALAPPDATA || '', 'mkcert');
+  const caSrc = path.join(caRoot, 'rootCA.pem');
+
+  if (!fs.existsSync(caSrc)) {
+    console.log('🔒 Registrando Autoridade Certificadora local...');
+    try {
+      execSync(`${mkcertBin} -install`, { stdio: 'inherit', timeout: 8000 });
+    } catch {
+      console.log('⚠️ Aviso: Continuando com a CA local existente...');
+    }
+  }
 
   const ips = getLocalIPs();
-  console.log(`🌐 Gerando certificados para: ${ips.join(', ')}`);
+  console.log(`🌐 Gerando certificados HTTPS para: ${ips.join(', ')}`);
 
   const certPath = path.join(CERTS_DIR, 'cert.pem');
   const keyPath = path.join(CERTS_DIR, 'key.pem');
 
-  execSync(`mkcert -cert-file "${certPath}" -key-file "${keyPath}" ${ips.join(' ')}`, { stdio: 'inherit' });
+  execSync(`${mkcertBin} -cert-file "${certPath}" -key-file "${keyPath}" ${ips.join(' ')}`, { stdio: 'inherit' });
 
-  // Copia a Root CA para a pasta certs com extensão .crt (que o iOS reconhece direto)
-  const caRoot = execSync('mkcert -CAROOT').toString().trim();
-  const caSrc = path.join(caRoot, 'rootCA.pem');
   const caDst = path.join(CERTS_DIR, 'rootCA.crt');
   if (fs.existsSync(caSrc)) {
     fs.copyFileSync(caSrc, caDst);
-    console.log(`✅ Certificado raiz salvo em: ${caDst}`);
+    console.log(`✅ Certificado raiz para iPhone salvo em: ${caDst}`);
   }
 
   console.log('\n🎉 Certificados HTTPS gerados com sucesso na pasta /certs!');
