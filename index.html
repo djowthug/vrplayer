@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, user-scalable=no">
+  <title>VR Player — Vídeos 360°, VR180, olho de peixe e 3D no iPhone</title>
+  <meta name="description" content="Player VR para iPhone: abra seus vídeos 360°, VR180, olho de peixe e 3D direto do aparelho e assista na tela ou em óculos Cardboard / VR Box.">
+  <meta name="theme-color" content="#000000">
+  <meta name="color-scheme" content="dark">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="VR Player">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="icon" type="image/png" href="icons/icon-192.png">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="css/style.css">
+  <script type="importmap">{ "imports": { "three": "./js/vendor/three.module.js" } }</script>
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <!-- Ícones (estilo SF Symbols) -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
+      <symbol id="i-recenter" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.2" fill="currentColor" stroke="none"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></g></symbol>
+      <symbol id="i-format" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="2.5" y="5.5" width="19" height="13" rx="3"/><path d="M12 5.5v13"/></g></symbol>
+      <symbol id="i-headset" viewBox="0 0 24 24"><path d="M2.5 9.5a3.5 3.5 0 0 1 3.5-3.5h12a3.5 3.5 0 0 1 3.5 3.5v4.5a3.5 3.5 0 0 1-3.5 3.5h-2.6a1.5 1.5 0 0 1-1.2-.6l-1.2-1.6a1.25 1.25 0 0 0-2 0l-1.2 1.6a1.5 1.5 0 0 1-1.2.6H6A3.5 3.5 0 0 1 2.5 14z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
+      <symbol id="i-sliders" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h9M19 7h1M4 17h3M13 17h7"/><circle cx="16" cy="7" r="2.6"/><circle cx="10" cy="17" r="2.6"/></g></symbol>
+      <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 4.8v14.4a1 1 0 0 0 1.5.86l11.6-7.2a1 1 0 0 0 0-1.72L9.5 3.94A1 1 0 0 0 8 4.8z" fill="currentColor"/></symbol>
+      <symbol id="i-pause" viewBox="0 0 24 24"><g fill="currentColor"><rect x="5.5" y="4" width="4.5" height="16" rx="1.3"/><rect x="14" y="4" width="4.5" height="16" rx="1.3"/></g></symbol>
+      <symbol id="i-back10" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4.2 13A8 8 0 1 0 7 6.1"/><path d="M8 2.8L6.6 6.3l3.6 1.1"/></g><text x="12.4" y="16.3" font-size="7.4" font-weight="700" text-anchor="middle" fill="currentColor" font-family="-apple-system, system-ui, sans-serif">10</text></symbol>
+      <symbol id="i-fwd10" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19.8 13A8 8 0 1 1 17 6.1"/><path d="M16 2.8l1.4 3.5-3.6 1.1"/></g><text x="11.6" y="16.3" font-size="7.4" font-weight="700" text-anchor="middle" fill="currentColor" font-family="-apple-system, system-ui, sans-serif">10</text></symbol>
+      <symbol id="i-speaker" viewBox="0 0 24 24"><path d="M3.5 9.2h3.2L11.5 5v14l-4.8-4.2H3.5z" fill="currentColor"/><path d="M15 9a4.2 4.2 0 0 1 0 6M17.8 6.3a8 8 0 0 1 0 11.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></symbol>
+      <symbol id="i-muted" viewBox="0 0 24 24"><path d="M3.5 9.2h3.2L11.5 5v14l-4.8-4.2H3.5z" fill="currentColor"/><path d="M15.5 9.5l5 5M20.5 9.5l-5 5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></symbol>
+      <symbol id="i-share" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M8 7l4-4 4 4"/><path d="M7 11H6a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6a2 2 0 0 0-2-2h-1"/></g></symbol>
+    </defs>
+  </svg>
+
+  <!-- ===================== INÍCIO ===================== -->
+  <main id="home" class="screen">
+    <header class="home-header">
+      <h1>VR Player</h1>
+      <p class="subtitle">Seus vídeos imersivos, direto do iPhone.</p>
+    </header>
+
+    <section class="hero" aria-label="Abrir vídeo">
+      <div class="hero-art" aria-hidden="true">
+        <svg viewBox="0 0 200 110">
+          <defs>
+            <linearGradient id="g-lens" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#64d2ff"/><stop offset="1" stop-color="#5e5ce6"/>
+            </linearGradient>
+            <linearGradient id="g-body" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#3a3a3c"/><stop offset="1" stop-color="#1c1c1e"/>
+            </linearGradient>
+          </defs>
+          <path d="M22 38a22 22 0 0 1 22-22h112a22 22 0 0 1 22 22v34a22 22 0 0 1-22 22h-30a8 8 0 0 1-6.4-3.2l-8-10.6a12 12 0 0 0-19.2 0l-8 10.6A8 8 0 0 1 74 94H44a22 22 0 0 1-22-22z" fill="url(#g-body)" stroke="rgba(255,255,255,.12)"/>
+          <ellipse class="lens" cx="66" cy="54" rx="26" ry="22" fill="url(#g-lens)"/>
+          <ellipse class="lens" cx="134" cy="54" rx="26" ry="22" fill="url(#g-lens)"/>
+          <ellipse cx="58" cy="46" rx="8" ry="5" fill="rgba(255,255,255,.35)"/>
+          <ellipse cx="126" cy="46" rx="8" ry="5" fill="rgba(255,255,255,.35)"/>
+        </svg>
+      </div>
+      <label id="open-file-btn" class="btn-primary" for="file-input">Abrir vídeo</label>
+      <input id="file-input" type="file" accept="video/*,.mp4,.mov,.m4v,.webm" hidden>
+      <p class="footnote">O vídeo é reproduzido no próprio aparelho e não é enviado para lugar nenhum.</p>
+    </section>
+
+    <section id="install-tip" class="group" hidden>
+      <h2 class="group-title">Tela cheia</h2>
+      <div class="list">
+        <div class="list-item">
+          <span class="list-icon" style="--c:#0a84ff"><svg><use href="#i-share"/></svg></span>
+          <div class="list-text"><strong>Adicione à Tela de Início</strong><small>Toque em Compartilhar → “Adicionar à Tela de Início” para abrir sem as barras do Safari.</small></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="group">
+      <h2 class="group-title">Formatos suportados</h2>
+      <ul class="list">
+        <li class="list-item"><span class="list-icon" style="--c:#0a84ff">360</span><div class="list-text"><strong>360° equiretangular</strong><small>Quadro único ou 3D em cima/embaixo</small></div></li>
+        <li class="list-item"><span class="list-icon" style="--c:#5e5ce6">180</span><div class="list-text"><strong>VR180</strong><small>3D lado a lado</small></div></li>
+        <li class="list-item"><span class="list-icon" style="--c:#ff9f0a">◐</span><div class="list-text"><strong>Olho de peixe</strong><small>Dois círculos lado a lado</small></div></li>
+        <li class="list-item"><span class="list-icon" style="--c:#30d158">3D</span><div class="list-text"><strong>3D plano</strong><small>Lado a lado ou em cima/embaixo, em tela de cinema</small></div></li>
+      </ul>
+      <p class="group-footer">O formato é detectado automaticamente pelo nome do arquivo e pela imagem, e você pode trocar a qualquer momento.</p>
+    </section>
+
+    <section class="group">
+      <h2 class="group-title">Como usar com óculos</h2>
+      <ul class="list">
+        <li class="list-item"><span class="list-icon" style="--c:#ff375f">1×</span><div class="list-text"><strong>Toque</strong><small>Reproduzir / pausar</small></div></li>
+        <li class="list-item"><span class="list-icon" style="--c:#ff375f">2×</span><div class="list-text"><strong>Toque duplo</strong><small>Mostrar o menu</small></div></li>
+        <li class="list-item"><span class="list-icon" style="--c:#ff375f">●</span><div class="list-text"><strong>Segurar</strong><small>Centralizar a visão</small></div></li>
+      </ul>
+    </section>
+  </main>
+
+  <!-- ===================== PLAYER ===================== -->
+  <section id="player" class="screen paused" hidden aria-label="Reprodutor">
+    <div id="stage"></div>
+    <video id="video" playsinline webkit-playsinline preload="auto"></video>
+
+    <div id="hud" class="hud" aria-live="polite">
+      <div class="hud-eye left"><span id="hud-l"></span></div>
+      <div class="hud-eye right"><span id="hud-r"></span></div>
+    </div>
+
+    <div id="rotate-hint" class="rotate-hint">
+      <div class="rotate-icon"></div>
+      <p>Gire o celular para a horizontal e encaixe nos óculos</p>
+    </div>
+
+    <div id="controls" class="controls">
+      <div class="top-bar">
+        <button id="btn-close" class="icon-btn glass" aria-label="Fechar vídeo"><svg><use href="#i-close"/></svg></button>
+        <div id="title" class="title glass"></div>
+        <div class="top-actions glass">
+          <button id="btn-recenter" class="icon-btn" aria-label="Centralizar visão"><svg><use href="#i-recenter"/></svg></button>
+          <button id="btn-format" class="icon-btn" aria-label="Formato do vídeo"><svg><use href="#i-format"/></svg></button>
+          <button id="btn-settings" class="icon-btn" aria-label="Ajustes"><svg><use href="#i-sliders"/></svg></button>
+          <button id="btn-headset" class="icon-btn" aria-label="Modo óculos"><svg><use href="#i-headset"/></svg></button>
+        </div>
+      </div>
+
+      <button id="big-play" class="big-play glass" aria-label="Reproduzir"><svg><use href="#i-play"/></svg></button>
+
+      <div class="bottom-bar glass">
+        <div class="scrub-row">
+          <span id="t-cur" class="time">0:00</span>
+          <input id="scrubber" type="range" min="0" max="1000" step="1" value="0" aria-label="Posição">
+          <span id="t-dur" class="time">0:00</span>
+        </div>
+        <div class="buttons-row">
+          <button id="btn-mute" class="icon-btn" aria-label="Som"><svg><use href="#i-speaker"/></svg></button>
+          <div class="transport">
+            <button id="btn-back10" class="icon-btn lg" aria-label="Voltar 10 segundos"><svg><use href="#i-back10"/></svg></button>
+            <button id="btn-play" class="icon-btn xl" aria-label="Reproduzir"><svg><use href="#i-play"/></svg></button>
+            <button id="btn-fwd10" class="icon-btn lg" aria-label="Avançar 10 segundos"><svg><use href="#i-fwd10"/></svg></button>
+          </div>
+          <button id="btn-format-chip" class="format-chip" aria-label="Formato atual"></button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sheets -->
+    <div id="sheet-backdrop" class="sheet-backdrop"></div>
+
+    <div id="sheet-format" class="sheet" role="dialog" aria-labelledby="sheet-format-title">
+      <div class="sheet-grabber"></div>
+      <div class="sheet-header">
+        <h2 id="sheet-format-title">Formato do vídeo</h2>
+        <button class="sheet-done" data-close>OK</button>
+      </div>
+      <p id="detect-caption" class="sheet-caption"></p>
+      <h3 class="section-label">Predefinições</h3>
+      <div id="presets" class="chips"></div>
+      <h3 class="section-label">Projeção</h3>
+      <div id="seg-projection" class="segmented">
+        <button data-value="360">360°</button>
+        <button data-value="180">180°</button>
+        <button data-value="fisheye">Olho de peixe</button>
+        <button data-value="flat">Plano</button>
+      </div>
+      <h3 class="section-label">Layout</h3>
+      <div id="seg-layout" class="segmented">
+        <button data-value="mono">Quadro único</button>
+        <button data-value="sbs">Lado a lado</button>
+        <button data-value="tb">Cima / baixo</button>
+      </div>
+      <div class="group-list spaced">
+        <label class="row" for="sw-swap"><span>Inverter olhos</span><input id="sw-swap" type="checkbox" class="switch"></label>
+      </div>
+      <p class="sheet-footnote">Ative se o 3D parecer estranho ou cansar a vista (olho esquerdo e direito trocados).</p>
+    </div>
+
+    <div id="sheet-settings" class="sheet" role="dialog" aria-labelledby="sheet-settings-title">
+      <div class="sheet-grabber"></div>
+      <div class="sheet-header">
+        <h2 id="sheet-settings-title">Ajustes</h2>
+        <button class="sheet-done" data-close>OK</button>
+      </div>
+      <h3 class="section-label">Imagem</h3>
+      <div class="group-list">
+        <div class="slider-row"><div class="slider-head"><span>Brilho</span><span id="sl-brightness-val" class="slider-val"></span></div><input id="sl-brightness" type="range"></div>
+        <div class="slider-row"><div class="slider-head"><span>Contraste</span><span id="sl-contrast-val" class="slider-val"></span></div><input id="sl-contrast" type="range"></div>
+      </div>
+      <h3 class="section-label">Óculos VR</h3>
+      <div class="group-list">
+        <div class="slider-row"><div class="slider-head"><span>Distância entre os olhos</span><span id="sl-ipd-val" class="slider-val"></span></div><input id="sl-ipd" type="range"></div>
+        <div class="slider-row"><div class="slider-head"><span>Campo de visão</span><span id="sl-fov-val" class="slider-val"></span></div><input id="sl-fov" type="range"></div>
+        <div class="slider-row"><div class="slider-head"><span>Correção da lente</span><span id="sl-distortion-val" class="slider-val"></span></div><input id="sl-distortion" type="range"></div>
+      </div>
+      <p class="sheet-footnote">Ajuste, encaixe o celular nos óculos e confira: as bordas devem parecer retas e as duas imagens devem se fundir sem esforço.</p>
+      <div class="group-list spaced">
+        <button id="btn-reset" class="row row-button">Restaurar padrões</button>
+      </div>
+    </div>
+  </section>
+
+  <div id="toast" class="toast glass" role="status"></div>
+</body>
+</html>
