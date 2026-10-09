@@ -50,13 +50,16 @@ node server.js "D:\Meus Videos VR"
 
 ## Uso
 
-| Ação | Tela | Óculos |
-|---|---|---|
-| Olhar em volta | Mexer o celular / arrastar | Mexer a cabeça |
-| Zoom | Pinça | Ajustes → Campo de visão |
-| Reproduzir/pausar | Botões | Toque |
-| Menu | Toque | Toque duplo |
-| Centralizar | Botão ◎ | Segurar o dedo |
+| Ação | Tela | Óculos (Toque) | Controle / Gamepad |
+|---|---|---|---|
+| Olhar em volta | Mexer celular / arrastar | Mexer a cabeça | Mexer a cabeça / Analógico (gira suave) |
+| Centralizar visão | Botão ◎ | Segurar o dedo | **Botão B / Y / △ / ○** |
+| Reproduzir/pausar | Botões | Toque simples | **Botão A / Gatilho / Start** |
+| Avançar / Retroceder | Barra de tempo | — | **D-Pad (◀ ▶) / L1 / R1** (±10s) |
+| Alternar Modo Óculos | Botão 🥽 | — | **Botão X / Select** |
+| Menu | Toque | Toque duplo | Botão Menu |
+
+> **Dica no iOS:** Conecte o controle Bluetooth nos Ajustes do iPhone. Ao abrir o VR Player, aperte qualquer botão do controle para o Safari ativá-lo imediatamente.
 
 ## Detecção de formato
 
@@ -69,7 +72,7 @@ A escolha manual fica salva para cada arquivo (nome + tamanho).
 ## Limitações
 
 - Codecs: H.264 e HEVC (MP4/MOV). 8K costuma não funcionar no iPhone; até ~5.7K vai bem.
-- O volume é controlado pelos botões físicos (o iOS não permite volume via página).
+- O volume no iOS é controlado pelos botões físicos (o Safari WebKit não permite alterar volume via JavaScript).
 - Olho de peixe considera 180° de campo de visão.
 
 ## Estrutura
@@ -78,9 +81,10 @@ A escolha manual fica salva para cada arquivo (nome + tamanho).
 index.html            interface
 css/style.css         visual estilo iOS
 js/app.js             estado, arquivos, controles
+js/gamepad.js         gamepad Bluetooth / MFi / VR no iOS e PC
 js/renderer.js        Three.js, estéreo, correção de lente
 js/projections.js     shaders 360/180/olho de peixe/plano
-js/controls.js        giroscópio, toques, recentralizar
+js/controls.js        giroscópio, toques, rotação yaw, recentralizar
 js/detect.js          detecção automática
 js/vendor/three.module.js
 sw.js / manifest.webmanifest / icons/

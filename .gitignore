@@ -4,3 +4,6 @@ Thumbs.db
 certs/
 videos/
 config.json
+node_modules/
+dist/
+

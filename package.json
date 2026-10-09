@@ -1,14 +1,83 @@
 {
   "name": "vrplayer",
   "version": "1.0.0",
-  "description": "VR Player PWA para iPhone com suporte a streaming local do PC",
+  "description": "VR Player 360/180/3D para Windows e Web/PWA",
   "type": "module",
-  "main": "server.js",
+  "main": "electron/main.cjs",
   "scripts": {
     "start": "node server.js",
-    "cert": "node scripts/setup-cert.js"
+    "cert": "node scripts/setup-cert.js",
+    "electron": "electron .",
+    "dist": "electron-builder --win",
+    "dist:portable": "electron-builder --win portable",
+    "dist:dir": "electron-builder --win --dir"
   },
-  "keywords": ["vr", "player", "threejs", "pwa", "streaming", "iphone"],
+  "keywords": [
+    "vr",
+    "player",
+    "threejs",
+    "pwa",
+    "desktop",
+    "electron",
+    "windows"
+  ],
   "author": "djowthug",
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^44.7.0",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.vrplayer.app",
+    "productName": "VR Player",
+    "copyright": "Copyright © 2026 djowthug",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "index.html",
+      "css/**/*",
+      "js/**/*",
+      "icons/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        },
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "icons/icon-512.png",
+      "fileAssociations": [
+        {
+          "ext": "mp4",
+          "name": "Vídeo MP4",
+          "role": "Viewer"
+        },
+        {
+          "ext": "mkv",
+          "name": "Vídeo MKV",
+          "role": "Viewer"
+        },
+        {
+          "ext": "webm",
+          "name": "Vídeo WebM",
+          "role": "Viewer"
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "VR Player"
+    }
+  }
 }

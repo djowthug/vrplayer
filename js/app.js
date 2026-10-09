@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { VRRenderer } from './renderer.js';
 import { LookControls } from './controls.js';
 import { analyzeFrame, guessFormat } from './detect.js';
+import { GamepadManager } from './gamepad.js';
 
 const $ = (id) => document.getElementById(id);
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
@@ -12,6 +13,7 @@ const els = {
   home: $('home'),
   player: $('player'),
   fileInput: $('file-input'),
+  openFileBtn: $('open-file-btn'),
   video: $('video'),
   controls: $('controls'),
   title: $('title'),
@@ -100,6 +102,7 @@ const state = {
 
 let vr = null;
 let look = null;
+let gamepad = null;
 const viewQ = new THREE.Quaternion();
 
 // ---------------- Motor 3D ----------------
@@ -124,8 +127,62 @@ function ensureEngine() {
   window.addEventListener('orientationchange', () => setTimeout(onResize, 300));
 }
 
+function initGamepad() {
+  if (gamepad) return;
+  gamepad = new GamepadManager({
+    onPlayPause: () => {
+      if (els.player.hidden) return;
+      togglePlay();
+      hud(video.paused ? 'Pausado' : 'Reproduzindo');
+    },
+    onRecenter: () => {
+      if (els.player.hidden) return;
+      requestGyroOnce();
+      look?.recenter();
+      hud('Visão centralizada');
+    },
+    onSeek: (seconds) => {
+      if (els.player.hidden) return;
+      seekBy(seconds);
+    },
+    onToggleHeadset: () => {
+      if (els.player.hidden) return;
+      setHeadset(!state.headset);
+      hud(state.headset ? 'Modo Óculos' : 'Modo Tela');
+    },
+    onRotateYaw: (delta) => {
+      if (els.player.hidden) return;
+      look?.rotateYaw(delta);
+    },
+    onRotatePitch: (delta) => {
+      if (els.player.hidden) return;
+      look?.rotatePitch(delta);
+    },
+    onVolumeChange: (delta) => {
+      if (els.player.hidden) return;
+      video.volume = clamp(video.volume + delta, 0, 1);
+      hud(`Volume ${Math.round(video.volume * 100)}%`);
+    },
+    onConnected: (name) => {
+      hud(`🎮 ${name} conectado`, 3000);
+      toast(`🎮 Controle conectado: ${name}`);
+    },
+    onDisconnected: () => {
+      hud('🎮 Controle desconectado', 2500);
+      toast('Controle desconectado');
+    },
+  });
+}
+
+let lastLoopTime = 0;
 function startLoop() {
-  vr.renderer.setAnimationLoop(() => {
+  lastLoopTime = performance.now();
+  vr.renderer.setAnimationLoop((time) => {
+    const now = typeof time === 'number' ? time : performance.now();
+    const dt = Math.min(Math.max((now - lastLoopTime) / 1000, 0.001), 0.1);
+    lastLoopTime = now;
+
+    gamepad?.update(dt);
     look.getQuaternion(viewQ);
     vr.render(viewQ);
     updateTimeUI();
@@ -190,7 +247,9 @@ async function openVideoSource({ url, name, size = 0, isBlob = false }) {
   try {
     await waitFor(video, 'loadedmetadata');
   } catch (err) {
-    toast('Não foi possível abrir este vídeo. O iPhone suporta MP4/MOV em H.264 ou HEVC.');
+    toast(isElectron
+      ? 'Não foi possível reproduzir este vídeo. Verifique se o formato ou codec é compatível.'
+      : 'Não foi possível abrir este vídeo. O iPhone suporta MP4/MOV em H.264 ou HEVC.');
     closePlayer();
     return;
   }
@@ -548,7 +607,11 @@ function setHeadset(on) {
     closeSheets();
     setControlsVisible(false);
     look.recenter();
-    hud('Toque: reproduzir/pausar\nToque duplo: menu · Segurar: centralizar', 4000);
+    if (gamepad?.connected) {
+      hud('Controle conectado\nA: Play/Pause · B/Y: Centralizar · ◀ ▶: Pular', 4500);
+    } else {
+      hud('Toque: reproduzir/pausar\nToque duplo: menu · Segurar: centralizar', 4000);
+    }
     if (video.paused) playVideo();
   } else {
     setControlsVisible(true);
@@ -707,6 +770,146 @@ els.serverUrlInput?.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') connectServer(els.serverUrlInput.value);
 });
 
+// ---------------- Desktop / Electron & Atalhos ----------------
+const isElectron = !!(window.electronAPI && window.electronAPI.isElectron);
+
+function setupDesktop() {
+  if (isElectron) {
+    if (els.openFileBtn) {
+      els.openFileBtn.removeAttribute('for');
+      els.openFileBtn.textContent = 'Abrir vídeo do computador';
+      els.openFileBtn.addEventListener('click', async (e) => {
+        e.preventDefault();
+        const file = await window.electronAPI.openFileDialog();
+        if (file) {
+          openVideoSource({
+            url: file.url,
+            name: file.name,
+            size: file.size,
+            isBlob: false,
+          });
+        }
+      });
+    }
+
+    const sub = els.home?.querySelector('.subtitle');
+    if (sub) sub.textContent = 'Player de vídeos imersivos em 360°, VR180 e 3D no Windows.';
+
+    const foot = els.home?.querySelector('.footnote');
+    if (foot) foot.textContent = 'Clique para abrir ou arraste arquivos de vídeo (.mp4, .mkv, .webm) para dentro da janela.';
+
+    const pcSection = $('pc-server-section');
+    if (pcSection) pcSection.hidden = true;
+
+    window.electronAPI.onOpenFile((file) => {
+      if (file) {
+        openVideoSource({
+          url: file.url,
+          name: file.name,
+          size: file.size || 0,
+          isBlob: false,
+        });
+      }
+    });
+  }
+
+  // Zoom no FOV via scroll do mouse
+  $('stage')?.addEventListener('wheel', (e) => {
+    if (state.headset) return;
+    e.preventDefault();
+    const delta = e.deltaY > 0 ? 3 : -3;
+    if (vr) {
+      vr.viewFov = clamp(vr.viewFov + delta, 30, 110);
+    }
+  }, { passive: false });
+
+  // Arrastar e soltar arquivos (Drag & Drop)
+  window.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+  });
+  window.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const files = e.dataTransfer?.files;
+    if (!files || files.length === 0) return;
+    const file = files[0];
+
+    if (isElectron && window.electronAPI.getPathForFile) {
+      const fullPath = window.electronAPI.getPathForFile(file);
+      if (fullPath) {
+        const info = await window.electronAPI.getFileInfo(fullPath);
+        if (info) {
+          openVideoSource({
+            url: info.url,
+            name: info.name,
+            size: info.size,
+            isBlob: false,
+          });
+          return;
+        }
+      }
+    }
+    openFile(file);
+  });
+
+  // Atalhos de teclado no Desktop e mini controles VR em modo Teclado/Mídia
+  window.addEventListener('keydown', (e) => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+    if (e.code === 'Space' || e.code === 'Enter' || e.code === 'NumpadEnter' || e.key === 'MediaPlayPause') {
+      e.preventDefault();
+      togglePlay();
+      hud(video.paused ? 'Pausado' : 'Reproduzindo');
+    } else if (e.code === 'ArrowLeft' || e.key === 'MediaTrackPrevious' || e.code === 'KeyJ') {
+      e.preventDefault();
+      seekBy(-10);
+    } else if (e.code === 'ArrowRight' || e.key === 'MediaTrackNext' || e.code === 'KeyL') {
+      e.preventDefault();
+      seekBy(10);
+    } else if (e.code === 'KeyR' || e.code === 'KeyC') {
+      e.preventDefault();
+      requestGyroOnce();
+      look?.recenter();
+      hud('Visão centralizada');
+    } else if (e.code === 'KeyV' || e.code === 'KeyH') {
+      e.preventDefault();
+      setHeadset(!state.headset);
+      hud(state.headset ? 'Modo Óculos' : 'Modo Tela');
+    } else if (e.code === 'ArrowUp') {
+      e.preventDefault();
+      video.volume = clamp(video.volume + 0.05, 0, 1);
+      hud(`Volume ${Math.round(video.volume * 100)}%`);
+    } else if (e.code === 'ArrowDown') {
+      e.preventDefault();
+      video.volume = clamp(video.volume - 0.05, 0, 1);
+      hud(`Volume ${Math.round(video.volume * 100)}%`);
+    } else if (e.code === 'KeyM') {
+      e.preventDefault();
+      video.muted = !video.muted;
+      els.btnMute.querySelector('use').setAttribute('href', video.muted ? '#i-muted' : '#i-speaker');
+      hud(video.muted ? 'Mudo' : `Volume ${Math.round(video.volume * 100)}%`);
+    } else if (e.code === 'KeyF' || e.code === 'F11') {
+      e.preventDefault();
+      if (isElectron) {
+        window.electronAPI.toggleFullScreen();
+      } else {
+        if (!document.fullscreenElement) {
+          document.documentElement.requestFullscreen?.().catch(() => {});
+        } else {
+          document.exitFullscreen?.().catch(() => {});
+        }
+      }
+    } else if (e.code === 'Escape' || e.code === 'Backspace') {
+      if (sheetOpen()) {
+        closeSheets();
+      } else if (!els.player.hidden) {
+        closePlayer();
+      }
+    }
+  });
+}
+
 // ---------------- Inicialização ----------------
 (function init() {
   const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) ||
@@ -716,6 +919,8 @@ els.serverUrlInput?.addEventListener('keydown', (e) => {
 
   syncSliders();
   renderFormatUI();
+  setupDesktop();
+  initGamepad();
 
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
     navigator.serviceWorker.register('sw.js').catch(() => {});

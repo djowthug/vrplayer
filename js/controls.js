@@ -106,6 +106,24 @@ export class LookControls {
     this.needsRecenter = true;
   }
 
+  /**
+   * Rotaciona o ângulo horizontal (yaw) suavemente (útil para analógico do controle).
+   * @param {number} delta Radianos a adicionar ao yaw.
+   */
+  rotateYaw(delta) {
+    this.yawOffset += delta;
+  }
+
+  /**
+   * Rotaciona a inclinação vertical (pitch) caso o giroscópio não esteja ativo.
+   * @param {number} delta Radianos a adicionar ao pitch.
+   */
+  rotatePitch(delta) {
+    if (!this.hasGyro) {
+      this.dragPitch = clamp(this.dragPitch + delta, -85 * DEG, 85 * DEG);
+    }
+  }
+
   _recenterNow() {
     this._compose(this._tmpQ);
     this._fwd.set(0, 0, -1).applyQuaternion(this._tmpQ);
