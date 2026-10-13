@@ -1,15 +1,18 @@
 // Service worker: guarda o app em cache para abrir offline.
 // Aumente a versão sempre que publicar mudanças.
-const CACHE = 'vrplayer-v3';
+const CACHE = 'vrplayer-v14';
 const ASSETS = [
   './',
   'index.html',
   'css/style.css',
   'js/app.js',
+  'js/cloud.js',
   'js/renderer.js',
   'js/projections.js',
+  'js/environments.js',
   'js/controls.js',
   'js/gamepad.js',
+  'js/cursor.js',
   'js/detect.js',
   'js/vendor/three.module.js',
   'manifest.webmanifest',
@@ -31,9 +34,15 @@ self.addEventListener('activate', (e) => {
 });
 
 // Rede primeiro (para receber atualizações), cache como reserva offline.
+// Não faz cache de endpoints de API dinâmica nem de streams de vídeo pesados.
 self.addEventListener('fetch', (e) => {
   const req = e.request;
-  if (req.method !== 'GET' || new URL(req.url).origin !== location.origin) return;
+  if (req.method !== 'GET') return;
+  
+  const url = new URL(req.url);
+  if (url.origin !== location.origin) return;
+  if (url.pathname.startsWith('/stream/') || url.pathname.startsWith('/hls/') || url.pathname.startsWith('/api/')) return;
+
   e.respondWith(
     fetch(req)
       .then((res) => {

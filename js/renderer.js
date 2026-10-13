@@ -1,6 +1,7 @@
 // Renderizador Three.js: modo Tela (um olho) e modo Óculos (estéreo + correção de lente).
 import * as THREE from 'three';
 import { createVideoMaterial, createDistortionMaterial, PROJECTION_MODE } from './projections.js';
+import { EnvironmentManager } from './environments.js';
 
 export class VRRenderer {
   constructor(container, video) {
@@ -27,11 +28,17 @@ export class VRRenderer {
     this.sphere = new THREE.Mesh(new THREE.SphereGeometry(100, 96, 64), this.material);
     this.plane = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), this.material);
     this.plane.position.set(0, 0, -6);
+    this.plane.renderOrder = 10;
+    this.material.depthWrite = true;
+    this.material.depthTest = true;
     this.scene.add(this.sphere, this.plane);
+
+    this.envManager = new EnvironmentManager(this.scene, this.plane);
 
     const rtOpts = { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, depthBuffer: true };
     this.rtL = new THREE.WebGLRenderTarget(2, 2, rtOpts);
     this.rtR = new THREE.WebGLRenderTarget(2, 2, rtOpts);
+    this.rtMono = new THREE.WebGLRenderTarget(2, 2, rtOpts);
     this.postMaterial = createDistortionMaterial(this.rtL.texture, this.rtR.texture);
     const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.postMaterial);
     quad.frustumCulled = false;
@@ -41,8 +48,15 @@ export class VRRenderer {
 
     this.format = { projection: '360', layout: 'mono', swap: false };
     this.headset = false;
-    this.headsetSettings = { ipd: 0, fov: 90, distortion: 0.25 };
+    this.headsetSettings = {
+      fov: 82, k1: 0.22, k2: 0.04, ca: 0.05, sharpening: 35, ipd: 0,
+      lensLX: 0, lensLY: 0, lensRX: 0, lensRY: 0, vShift: 0, roll: 0,
+    };
     this.viewFov = 75;
+    this.desktopOptics = { k1: 0, k2: 0, ca: 0, sharpening: 0 };
+    this.fisheyeSettings = { fov: 180, scale: 1.0 };
+    this._rollQ = new THREE.Quaternion();
+    this._zAxis = new THREE.Vector3(0, 0, 1);
 
     this.resize();
     this.setFormat(this.format);
@@ -58,8 +72,64 @@ export class VRRenderer {
     this.material.uniforms.mode.value = PROJECTION_MODE[this.format.projection] ?? 0;
     this.sphere.visible = !flat;
     this.plane.visible = flat;
-    this.scene.background.set(flat ? 0x0c0c0e : 0x000000);
+    this.envManager.setVisible(flat);
     this.updatePlane();
+  }
+
+  setFisheyeSettings({ fov, scale } = {}) {
+    if (fov !== undefined) {
+      this.fisheyeSettings.fov = fov;
+      this.material.uniforms.fisheyeFov.value = (fov * Math.PI) / 180;
+    }
+    if (scale !== undefined) {
+      this.fisheyeSettings.scale = scale;
+      this.material.uniforms.fisheyeScale.value = scale;
+    }
+  }
+
+  /** Calibração óptica do modo Tela (monocular): { k1, k2, ca, sharpening }. */
+  setDesktopOptics(o = {}) {
+    this.desktopOptics = { ...this.desktopOptics, ...o };
+  }
+
+  /** Atalho legado: define apenas a distorção K1 do modo Tela (K2 = 0.4·K1). */
+  setDesktopDistortion(distortion) {
+    this.setDesktopOptics({ k1: distortion, k2: distortion * 0.4 });
+  }
+
+  /** True quando o modo Tela precisa da passada de pós-processamento. */
+  desktopNeedsPost() {
+    const o = this.desktopOptics;
+    return (o.k1 || 0) > 0.001 || (o.k2 || 0) > 0.001 || (o.ca || 0) > 0.0005 || (o.sharpening || 0) > 0.5;
+  }
+
+  /** Preenche os uniformes do shader de pós-processamento a partir de um perfil óptico. */
+  _applyOptics(o, stereo, rt) {
+    const u = this.postMaterial.uniforms;
+    const ca = o.ca || 0;
+    u.isStereo.value = stereo;
+    u.k1.value = o.k1 || 0;
+    u.k2.value = o.k2 || 0;
+    u.caK.value.set(-ca, 0, ca);
+    u.sharpness.value = Math.min(1, Math.max(0, (o.sharpening || 0) / 100));
+    u.texel.value.set(1 / Math.max(1, rt.width), 1 / Math.max(1, rt.height));
+    if (stereo) {
+      u.ipd.value = o.ipd || 0;
+      u.centerL.value.set(o.lensLX || 0, o.lensLY || 0);
+      u.centerR.value.set(o.lensRX || 0, o.lensRY || 0);
+      u.vShift.value = o.vShift || 0;
+      u.aspect.value = this.width / 2 / this.height;
+    } else {
+      u.ipd.value = 0;
+      u.centerL.value.set(0, 0);
+      u.centerR.value.set(0, 0);
+      u.vShift.value = 0;
+      u.aspect.value = this.width / this.height;
+    }
+  }
+
+  setEnvironment(envId) {
+    this.envManager.setEnvironment(envId);
   }
 
   /** Dimensiona a "tela de cinema" de acordo com a proporção de um olho. */
@@ -71,20 +141,23 @@ export class VRRenderer {
     if (layout === 'sbs' && r > 2.5) r /= 2;      // SBS completo (ex.: 3840x1080)
     if (layout === 'tb' && r < 1.2) r *= 2;       // TB completo (ex.: 1920x2160)
     const h = 4;
-    this.plane.scale.set(h * r, h, 1);
+    const w = h * r;
+    this.plane.scale.set(w, h, 1);
+    this.envManager.updateScreenSize(w, h);
   }
 
-  setImage({ brightness, contrast }) {
-    this.material.uniforms.brightness.value = brightness;
-    this.material.uniforms.contrast.value = contrast;
+  setImage({ brightness = 0, contrast = 1, exposure = 0, saturation = 1, gamma = 1 } = {}) {
+    const u = this.material.uniforms;
+    if (u.brightness) u.brightness.value = brightness;
+    if (u.contrast) u.contrast.value = contrast;
+    if (u.exposure) u.exposure.value = exposure;
+    if (u.saturation) u.saturation.value = saturation;
+    if (u.gamma) u.gamma.value = gamma;
   }
 
   setHeadsetSettings(s) {
     this.headsetSettings = { ...this.headsetSettings, ...s };
-    const u = this.postMaterial.uniforms;
-    u.ipd.value = this.headsetSettings.ipd;
-    u.k1.value = this.headsetSettings.distortion;
-    u.k2.value = this.headsetSettings.distortion * 0.4;
+    if (this.headset) this._applyOptics(this.headsetSettings, true, this.rtL);
   }
 
   setHeadset(on) {
@@ -111,12 +184,15 @@ export class VRRenderer {
     const pr = this.renderer.getPixelRatio();
     const ew = Math.max(1, Math.floor((w / 2) * pr));
     const eh = Math.max(1, Math.floor(h * pr));
+    const fw = Math.max(1, Math.floor(w * pr));
     this.rtL.setSize(ew, eh);
     this.rtR.setSize(ew, eh);
-    this.postMaterial.uniforms.aspect.value = w / 2 / h;
+    this.rtMono.setSize(fw, eh);
+    this.postMaterial.uniforms.aspect.value = this.headset ? w / 2 / h : w / h;
   }
 
-  render(quaternion) {
+  render(quaternion, dt = 0.016) {
+    this.envManager.update(dt);
     const { renderer: r, camera, scene } = this;
     camera.quaternion.copy(quaternion);
 
@@ -125,12 +201,32 @@ export class VRRenderer {
       camera.aspect = this.width / this.height;
       camera.updateProjectionMatrix();
       this.setEye(0);
-      r.setRenderTarget(null);
-      r.render(scene, camera);
+
+      if (this.desktopNeedsPost()) {
+        r.setRenderTarget(this.rtMono);
+        r.render(scene, camera);
+
+        this._applyOptics(this.desktopOptics, false, this.rtMono);
+        this.postMaterial.uniforms.tLeft.value = this.rtMono.texture;
+
+        r.setRenderTarget(null);
+        r.render(this.postScene, this.postCamera);
+      } else {
+        r.setRenderTarget(null);
+        r.render(scene, camera);
+      }
       return;
     }
 
-    camera.fov = this.headsetSettings.fov;
+    const hs = this.headsetSettings;
+    // Inclinação do horizonte (Roll): gira a câmera em torno do eixo de visão,
+    // evitando cantos pretos que surgiriam ao girar a imagem já renderizada.
+    if (hs.roll) {
+      this._rollQ.setFromAxisAngle(this._zAxis, THREE.MathUtils.degToRad(hs.roll));
+      camera.quaternion.multiply(this._rollQ);
+    }
+
+    camera.fov = hs.fov;
     camera.aspect = this.width / 2 / this.height;
     camera.updateProjectionMatrix();
 
@@ -141,6 +237,11 @@ export class VRRenderer {
     this.setEye(1);
     r.setRenderTarget(this.rtR);
     r.render(scene, camera);
+
+    this._applyOptics(hs, true, this.rtL);
+    const u = this.postMaterial.uniforms;
+    u.tLeft.value = this.rtL.texture;
+    u.tRight.value = this.rtR.texture;
 
     r.setRenderTarget(null);
     r.render(this.postScene, this.postCamera);

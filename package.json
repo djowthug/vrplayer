@@ -8,6 +8,14 @@
     "start": "node server.js",
     "cert": "node scripts/setup-cert.js",
     "electron": "electron .",
+    "optimize": "node scripts/batch-optimize.js",
+    "clean": "node scripts/clean.js",
+    "clean:cache": "node scripts/clean.js --cache",
+    "clean:all": "node scripts/clean.js --all",
+    "check": "node --check server.js && node --check electron/main.cjs && node --check electron/preload.cjs && node --check scripts/batch-optimize.js && node --check scripts/clean.js",
+    "bin": "node scripts/setup-binaries.js",
+    "setup:bin": "node scripts/setup-binaries.js",
+    "predist": "node scripts/setup-binaries.js",
     "dist": "electron-builder --win",
     "dist:portable": "electron-builder --win portable",
     "dist:dir": "electron-builder --win --dir"
@@ -23,6 +31,9 @@
   ],
   "author": "djowthug",
   "license": "MIT",
+  "dependencies": {
+    "bonjour-service": "^1.4.4"
+  },
   "devDependencies": {
     "electron": "^44.7.0",
     "electron-builder": "^26.15.3"
@@ -42,15 +53,30 @@
       "electron/**/*",
       "package.json"
     ],
+    "extraResources": [
+      {
+        "from": "bin",
+        "to": "bin",
+        "filter": [
+          "ffmpeg.exe",
+          "ffprobe.exe",
+          "mkcert.exe"
+        ]
+      }
+    ],
     "win": {
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         },
         {
           "target": "portable",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "icons/icon-512.png",
@@ -69,6 +95,26 @@
           "ext": "webm",
           "name": "Vídeo WebM",
           "role": "Viewer"
+        },
+        {
+          "ext": "mov",
+          "name": "Vídeo QuickTime",
+          "role": "Viewer"
+        },
+        {
+          "ext": "m4v",
+          "name": "Vídeo M4V",
+          "role": "Viewer"
+        },
+        {
+          "ext": "avi",
+          "name": "Vídeo AVI",
+          "role": "Viewer"
+        },
+        {
+          "ext": "ts",
+          "name": "Vídeo MPEG-TS",
+          "role": "Viewer"
         }
       ]
     },
@@ -79,5 +125,8 @@
       "createStartMenuShortcut": true,
       "shortcutName": "VR Player"
     }
+  },
+  "dependencies": {
+    "bonjour-service": "^1.4.4"
   }
 }

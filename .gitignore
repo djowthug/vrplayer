@@ -1,9 +1,40 @@
+# Sistema operacional e arquivos temporários
 Thumbs.db
+ehthumbs.db
+Desktop.ini
 .DS_Store
+*.tmp
 *.log
-certs/
-videos/
-config.json
-node_modules/
-dist/
 
+# Dependências
+node_modules/
+
+# Build e executáveis
+dist/
+build/
+out/
+.icon-ico/
+bin/*.exe
+
+# Testes e vídeos locais
+_test/
+scratch/
+videos/*
+!videos/.gitkeep
+.cache/
+
+# Certificados locais gerados (mkcert)
+certs/
+
+# Configuração local do usuário
+config.json
+config copy.json
+config *.json
+config.*.json
+!config.example.json
+
+# IDEs e editores
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace

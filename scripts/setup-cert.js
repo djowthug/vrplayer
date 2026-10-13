@@ -3,6 +3,10 @@ import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { getBinaryPath, setupBinaryEnv } from './bin-paths.js';
+
+// Garante que o PATH contenha os binários embutidos
+setupBinaryEnv();
 
 const CERTS_DIR = path.resolve('certs');
 if (!fs.existsSync(CERTS_DIR)) {
@@ -11,7 +15,12 @@ if (!fs.existsSync(CERTS_DIR)) {
 
 function getLocalIPs() {
   const nets = os.networkInterfaces();
-  const ips = ['localhost', '127.0.0.1'];
+  const ips = ['localhost', '127.0.0.1', 'vrplayer.local'];
+  const localHost = os.hostname();
+  if (localHost) {
+    ips.push(`${localHost.toLowerCase()}.local`);
+    ips.push(localHost);
+  }
   for (const name of Object.keys(nets)) {
     for (const net of nets[name]) {
       if (net.family === 'IPv4' && !net.internal && !net.address.startsWith('169.254')) {
@@ -23,8 +32,13 @@ function getLocalIPs() {
 }
 
 function findMkcert() {
+  const bundled = getBinaryPath('mkcert');
+  if (bundled !== 'mkcert' && fs.existsSync(bundled)) {
+    return `"${bundled}"`;
+  }
+
   try {
-    const out = execSync('where mkcert', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    const out = execSync('where.exe mkcert', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
     if (out) return 'mkcert';
   } catch {}
 

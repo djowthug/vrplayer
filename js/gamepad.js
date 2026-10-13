@@ -136,6 +136,11 @@ export class GamepadManager {
     const stickX = cleanVal(ax);
     const stickY = cleanVal(ay);
 
+    // Se o HUD da pílula estiver aberto, pausa giro para estabilizar visão durante ajuste
+    if (this.callbacks.isPillActive?.()) {
+      return;
+    }
+
     // Girar visão horizontal (Yaw)
     if (stickX !== 0) {
       // stickX > 0 (inclinado para a direita) -> gira visão para a direita (yaw diminui)
@@ -182,6 +187,47 @@ export class GamepadManager {
   }
 
   _handleStandardButton(index, justPressed, isPressed, holdTime, lastRepeat) {
+    // Modo de ajuste da Pílula HUD
+    if (this.callbacks.isPillActive?.()) {
+      // Fechar (B / Círculo ou Start/Menu)
+      if ((index === 1 || index === 8 || index === 9) && justPressed) {
+        this.callbacks.onPillClose?.();
+        return;
+      }
+      // Ciclar Preset de Headset (X / Quadrado)
+      if (index === 2 && justPressed) {
+        this.callbacks.onPillPresetCycle?.(1);
+        return;
+      }
+      // Restaurar valor padrão do parâmetro (Y / Triângulo)
+      if (index === 3 && justPressed) {
+        this.callbacks.onPillReset?.();
+        return;
+      }
+      // Parâmetro anterior (L1 / LB ou D-Pad Cima)
+      if ((index === 4 || index === 12) && justPressed) {
+        this.callbacks.onPillPrev?.();
+        return;
+      }
+      // Próximo parâmetro (R1 / RB ou D-Pad Baixo)
+      if ((index === 5 || index === 13) && justPressed) {
+        this.callbacks.onPillNext?.();
+        return;
+      }
+      // Reduzir valor do ajuste (D-Pad Esquerda ou Gatilho L2)
+      if (index === 14 || index === 6) {
+        this._handleRepeatablePillAdjust(-1, index, justPressed, isPressed, holdTime, lastRepeat);
+        return;
+      }
+      // Aumentar valor do ajuste (D-Pad Direita ou Gatilho R2)
+      if (index === 15 || index === 7) {
+        this._handleRepeatablePillAdjust(1, index, justPressed, isPressed, holdTime, lastRepeat);
+        return;
+      }
+      // Botão 0 (A / Cross) é reservado para cliques e seleção pelo cursor virtual
+      return;
+    }
+
     // Mapeamento W3C Standard Gamepad:
     // 0: A / Cruz
     // 1: B / Círculo
@@ -200,8 +246,16 @@ export class GamepadManager {
     // 14: D-Pad Esquerda
     // 15: D-Pad Direita
 
-    // Play / Pause
-    if ((index === 0 || index === 9) && justPressed) {
+    // Play / Pause ou Menu
+    if (index === 9 && justPressed) {
+      if (this.callbacks.onToggleMenu) {
+        this.callbacks.onToggleMenu();
+      } else {
+        this.callbacks.onPlayPause?.();
+      }
+      return;
+    }
+    if (index === 0 && justPressed) {
       this.callbacks.onPlayPause?.();
       return;
     }
@@ -242,11 +296,50 @@ export class GamepadManager {
   }
 
   _handleGenericButton(index, justPressed, isPressed, holdTime, lastRepeat) {
+    // Modo de ajuste da Pílula HUD para mini controles
+    if (this.callbacks.isPillActive?.()) {
+      if ((index === 1 || index === 8 || index === 9) && justPressed) {
+        this.callbacks.onPillClose?.();
+        return;
+      }
+      if (index === 2 && justPressed) {
+        this.callbacks.onPillPresetCycle?.(1);
+        return;
+      }
+      if (index === 3 && justPressed) {
+        this.callbacks.onPillReset?.();
+        return;
+      }
+      if ((index === 4 || index === 12) && justPressed) {
+        this.callbacks.onPillPrev?.();
+        return;
+      }
+      if ((index === 5 || index === 13) && justPressed) {
+        this.callbacks.onPillNext?.();
+        return;
+      }
+      if (index === 14) {
+        this._handleRepeatablePillAdjust(-1, index, justPressed, isPressed, holdTime, lastRepeat);
+        return;
+      }
+      if (index === 15) {
+        this._handleRepeatablePillAdjust(1, index, justPressed, isPressed, holdTime, lastRepeat);
+        return;
+      }
+      // Botão 0 (Gatilho / A) é reservado para cliques e seleção pelo cursor virtual
+      return;
+    }
+
     // Mini controles VR em modo genérico (Mocute, VR Box, etc.)
     switch (index) {
       case 0: // Botão principal / gatilho
-      case 9:
         if (justPressed) this.callbacks.onPlayPause?.();
+        break;
+      case 9:
+        if (justPressed) {
+          if (this.callbacks.onToggleMenu) this.callbacks.onToggleMenu();
+          else this.callbacks.onPlayPause?.();
+        }
         break;
       case 1: // Botão secundário / B
       case 3:
@@ -272,6 +365,19 @@ export class GamepadManager {
       case 13:
         if (justPressed) this.callbacks.onVolumeChange?.(-0.05);
         break;
+    }
+  }
+
+  _handleRepeatablePillAdjust(direction, index, justPressed, isPressed, holdTime, lastRepeat) {
+    if (justPressed) {
+      this.callbacks.onPillAdjust?.(direction);
+      this._btnLastRepeat.set(index, 0);
+    } else if (isPressed && holdTime >= REPEAT_DELAY) {
+      const elapsedSinceRepeat = holdTime - REPEAT_DELAY - lastRepeat;
+      if (elapsedSinceRepeat >= 0.08) {
+        this.callbacks.onPillAdjust?.(direction);
+        this._btnLastRepeat.set(index, holdTime - REPEAT_DELAY);
+      }
     }
   }
 

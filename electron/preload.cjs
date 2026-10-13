@@ -6,6 +6,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getFileInfo: (filePath) => ipcRenderer.invoke('file:info', filePath),
   toggleFullScreen: () => ipcRenderer.invoke('window:toggleFullScreen'),
   isFullScreen: () => ipcRenderer.invoke('window:isFullScreen'),
+  getCodecDiagnostics: () => ipcRenderer.invoke('media:codecDiagnostics'),
+  probeMedia: (filePath) => ipcRenderer.invoke('media:probe', filePath),
+  optimizeMedia: (filePath) => ipcRenderer.invoke('media:optimize', filePath),
+  cancelOptimization: () => ipcRenderer.invoke('media:cancelOptimization'),
+  batchGetDefaultFolder: () => ipcRenderer.invoke('batch:getDefaultFolder'),
+  batchSelectFolder: () => ipcRenderer.invoke('batch:selectFolder'),
+  batchScan: (folderPath) => ipcRenderer.invoke('batch:scan', folderPath),
+  batchStart: (data) => ipcRenderer.invoke('batch:start', data),
+  batchCancel: () => ipcRenderer.invoke('batch:cancel'),
+  onBatchProgress: (callback) => {
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on('batch:progress', handler);
+    return () => ipcRenderer.removeListener('batch:progress', handler);
+  },
   getPathForFile: (file) => {
     try {
       if (webUtils && typeof webUtils.getPathForFile === 'function') {
@@ -21,4 +35,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('open-file', handler);
     return () => ipcRenderer.removeListener('open-file', handler);
   },
+  getLibrary: () => ipcRenderer.invoke('library:getLibrary'),
+  addLibraryFolder: () => ipcRenderer.invoke('library:addFolder'),
+  removeLibraryFolder: (folderPath) => ipcRenderer.invoke('library:removeFolder', folderPath),
+  rescanLibrary: () => ipcRenderer.invoke('library:rescan'),
+  openFolderInExplorer: (folderPath) => ipcRenderer.invoke('library:openFolder', folderPath),
 });

@@ -20,8 +20,12 @@ const videoFrag = /* glsl */`
   uniform int mode;          // 0 = 360, 1 = 180, 2 = olho de peixe, 3 = plano
   uniform vec4 eyeRect;      // xy = deslocamento, zw = escala (região do olho na textura)
   uniform float fisheyeFov;  // em radianos
+  uniform float fisheyeScale;// escala/zoom do círculo (1.0 = normal)
+  uniform float exposure;
   uniform float brightness;
   uniform float contrast;
+  uniform float saturation;
+  uniform float gamma;
   varying vec3 vDir;
   varying vec2 vUv;
   const float PI = 3.141592653589793;
@@ -39,7 +43,8 @@ const videoFrag = /* glsl */`
         float theta = acos(clamp(-d.z, -1.0, 1.0));
         float halfFov = fisheyeFov * 0.5;
         if (theta > halfFov) inside = false;
-        float r = theta / halfFov * 0.5;
+        float r = (theta / halfFov * 0.5) / max(fisheyeScale, 0.01);
+        if (r > 0.5) inside = false;
         float phi = atan(d.y, d.x);
         uv = vec2(0.5 + r * cos(phi), 0.5 + r * sin(phi));
       } else {
@@ -61,7 +66,20 @@ const videoFrag = /* glsl */`
 
     uv = eyeRect.xy + clamp(uv, 0.0005, 0.9995) * eyeRect.zw;
     vec3 c = texture2D(map, uv).rgb;
+
+    // 1. Exposição (escala EV: -1.0 a +1.0)
+    c *= pow(2.0, exposure);
+
+    // 2. Brilho e Contraste
     c = (c - 0.5) * contrast + 0.5 + brightness;
+
+    // 3. Saturação cromática (luminância Rec. 709)
+    float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    c = mix(vec3(luma), c, saturation);
+
+    // 4. Correção de Gamma
+    c = pow(max(c, vec3(0.0)), vec3(1.0 / max(gamma, 0.01)));
+
     gl_FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
   }
 `;
@@ -73,17 +91,28 @@ export function createVideoMaterial(texture) {
       mode: { value: 0 },
       eyeRect: { value: new THREE.Vector4(0, 0, 1, 1) },
       fisheyeFov: { value: Math.PI },
-      brightness: { value: 0 },
-      contrast: { value: 1 },
+      fisheyeScale: { value: 1.0 },
+      exposure: { value: 0.0 },
+      brightness: { value: 0.0 },
+      contrast: { value: 1.0 },
+      saturation: { value: 1.0 },
+      gamma: { value: 1.0 },
     },
     vertexShader: videoVert,
     fragmentShader: videoFrag,
     side: THREE.DoubleSide,
-    depthWrite: false,
+    depthWrite: true,
+    depthTest: true,
   });
 }
 
-// ---------- Distorção de barril para lentes de Cardboard / VR Box ----------
+// ---------- Calibração Óptica Avançada (lentes Cardboard / VR Box / VRG) e Correção Desktop ----------
+// Uma única passada de pós-processamento aplica, por pixel:
+//   1. Centro óptico por olho (IPD + offset X/Y independente)
+//   2. Distorção de barril de ordem superior: r_dist = r · (1 + K1·r² + K2·r⁴)
+//   3. Aberração cromática lateral: escala radial independente por canal (R/G/B)
+//   4. Nitidez CAS (Contrast Adaptive Sharpening) para compensar o desfoque das lentes
+//   5. Alinhamento vertical estéreo (dividido entre os dois olhos)
 const postVert = /* glsl */`
   varying vec2 vUv;
   void main() {
@@ -95,30 +124,74 @@ const postVert = /* glsl */`
 const postFrag = /* glsl */`
   uniform sampler2D tLeft;
   uniform sampler2D tRight;
-  uniform float k1;
-  uniform float k2;
-  uniform float ipd;      // deslocamento do centro de cada lente (fração da metade da tela)
-  uniform float aspect;   // largura/altura de cada metade
+  uniform vec2 texel;      // 1/largura, 1/altura do render target do olho (para o CAS)
+  uniform float k1;        // distorção radial de 2ª ordem
+  uniform float k2;        // distorção radial de 4ª ordem
+  uniform vec3 caK;        // (Ka, 0, Kb): R_scale = 1+Ka·r², G_scale = 1, B_scale = 1+Kb·r²
+  uniform float sharpness; // 0..1 (intensidade do CAS)
+  uniform float ipd;       // deslocamento do centro de cada lente (fração da metade da tela)
+  uniform vec2 centerL;    // offset do centro óptico do olho esquerdo
+  uniform vec2 centerR;    // offset do centro óptico do olho direito
+  uniform float vShift;    // alinhamento vertical estéreo (+ sobe o olho direito)
+  uniform float aspect;    // largura/altura de cada metade (ou tela inteira no desktop)
+  uniform bool isStereo;   // true = óculos VR SBS, false = desktop (tela cheia monocular)
   varying vec2 vUv;
 
+  vec3 tap(bool left, vec2 s) {
+    return left ? texture2D(tLeft, s).rgb : texture2D(tRight, s).rgb;
+  }
+
+  // AMD FidelityFX CAS simplificado (cruz de 5 amostras). Calcula o realce na
+  // coordenada do canal verde e aplica como delta sobre a cor já corrigida de aberração.
+  vec3 cas(bool left, vec2 s, vec3 base) {
+    vec3 c  = tap(left, s);
+    vec3 n  = tap(left, s + vec2(0.0, texel.y));
+    vec3 so = tap(left, s - vec2(0.0, texel.y));
+    vec3 e  = tap(left, s + vec2(texel.x, 0.0));
+    vec3 w  = tap(left, s - vec2(texel.x, 0.0));
+    vec3 mn = min(c, min(min(n, so), min(e, w)));
+    vec3 mx = max(c, max(max(n, so), max(e, w)));
+    vec3 amp = sqrt(clamp(min(mn, 1.0 - mx) / max(mx, vec3(0.0001)), 0.0, 1.0));
+    vec3 wgt = -amp / mix(8.0, 5.0, sharpness);
+    vec3 sharp = (c + (n + so + e + w) * wgt) / (1.0 + 4.0 * wgt);
+    return base + (sharp - c);
+  }
+
+  vec2 toUv(vec2 p, float vs) {
+    return vec2(p.x / aspect, p.y) + 0.5 + vec2(0.0, vs);
+  }
+
   void main() {
-    bool left = vUv.x < 0.5;
-    vec2 uv = vec2(left ? vUv.x * 2.0 : (vUv.x - 0.5) * 2.0, vUv.y);
-    vec2 center = vec2(left ? 0.5 - ipd : 0.5 + ipd, 0.5);
+    bool left = true;
+    vec2 uv = vUv;
+    vec2 center = vec2(0.5);
+    float vs = 0.0;
+
+    if (isStereo) {
+      left = vUv.x < 0.5;
+      uv.x = left ? vUv.x * 2.0 : (vUv.x - 0.5) * 2.0;
+      center = left ? vec2(0.5 - ipd, 0.5) + centerL : vec2(0.5 + ipd, 0.5) + centerR;
+      vs = left ? -0.5 * vShift : 0.5 * vShift;
+    }
 
     vec2 p = uv - center;
     p.x *= aspect;
     float r2 = dot(p, p);
-    p *= 1.0 + k1 * r2 + k2 * r2 * r2;
-    p.x /= aspect;
-    vec2 s = p + 0.5;
+    vec2 pd = p * (1.0 + k1 * r2 + k2 * r2 * r2);
 
-    if (s.x < 0.0 || s.x > 1.0 || s.y < 0.0 || s.y > 1.0) {
+    vec2 sG = toUv(pd, vs);
+    if (sG.x < 0.0 || sG.x > 1.0 || sG.y < 0.0 || sG.y > 1.0) {
       gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
       return;
     }
-    vec3 c = left ? texture2D(tLeft, s).rgb : texture2D(tRight, s).rgb;
-    gl_FragColor = vec4(c, 1.0);
+
+    vec2 sR = toUv(pd * (1.0 + caK.x * r2), vs);
+    vec2 sB = toUv(pd * (1.0 + caK.z * r2), vs);
+    vec3 col = vec3(tap(left, sR).r, tap(left, sG).g, tap(left, sB).b);
+
+    if (sharpness > 0.001) col = cas(left, sG, col);
+
+    gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
   }
 `;
 
@@ -127,10 +200,17 @@ export function createDistortionMaterial(texLeft, texRight) {
     uniforms: {
       tLeft: { value: texLeft },
       tRight: { value: texRight },
-      k1: { value: 0.25 },
-      k2: { value: 0.1 },
+      texel: { value: new THREE.Vector2(1 / 1024, 1 / 1024) },
+      k1: { value: 0.22 },
+      k2: { value: 0.04 },
+      caK: { value: new THREE.Vector3(0, 0, 0) },
+      sharpness: { value: 0 },
       ipd: { value: 0 },
+      centerL: { value: new THREE.Vector2(0, 0) },
+      centerR: { value: new THREE.Vector2(0, 0) },
+      vShift: { value: 0 },
       aspect: { value: 1 },
+      isStereo: { value: true },
     },
     vertexShader: postVert,
     fragmentShader: postFrag,

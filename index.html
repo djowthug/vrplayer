@@ -36,15 +36,32 @@
       <symbol id="i-share" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M8 7l4-4 4 4"/><path d="M7 11H6a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6a2 2 0 0 0-2-2h-1"/></g></symbol>
       <symbol id="i-desktop" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="3.5" width="19" height="13" rx="2.5"/><path d="M8 20.5h8M12 16.5v4"/></g></symbol>
       <symbol id="i-gamepad" viewBox="0 0 24 24"><path d="M6 8h12a4 4 0 0 1 3.9 4.8l-1.3 6.1a2 2 0 0 1-2 1.6 2 2 0 0 1-1.7-1l-2.2-3.8a2 2 0 0 0-1.7-.9h-2a2 2 0 0 0-1.7.9l-2.2 3.8a2 2 0 0 1-1.7 1 2 2 0 0 1-2-1.6L2.1 12.8A4 4 0 0 1 6 8z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M6 12v4M4 14h4M16 13h.01M18 15h.01" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+      <symbol id="i-pulse" viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-sparkles" viewBox="0 0 24 24"><path d="M12 2l2.4 5.6L20 10l-5.6 2.4L12 18l-2.4-5.6L4 10l5.6-2.4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M6.5 19a4.5 4.5 0 0 1-.4-8.98A7.002 7.002 0 0 1 19.5 12a4.5 4.5 0 0 1-1.5 8.75H6.5z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></symbol>
+      <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+      <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14m-7-7h14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
     </defs>
   </svg>
 
   <!-- ===================== INÍCIO ===================== -->
   <main id="home" class="screen">
-    <header class="home-header">
-      <h1>VR Player</h1>
-      <p class="subtitle">Seus vídeos imersivos, direto do iPhone.</p>
-    </header>
+    <div id="home-split-viewport" class="home-split-viewport">
+      <div id="home-pane-primary" class="home-pane left">
+        <header class="home-header">
+          <div class="home-header-row">
+            <div>
+              <h1>VR Player</h1>
+              <p class="subtitle">Seus vídeos imersivos, direto do iPhone.</p>
+            </div>
+            <button id="btn-home-headset" class="btn-headset-toggle" aria-label="Alternar Modo Óculos VR" title="Alternar Modo Óculos VR (Duas Telas SBS)">
+              <svg style="width:20px;height:20px;"><use href="#i-headset"/></svg>
+              <span class="btn-headset-label">Modo Óculos</span>
+            </button>
+          </div>
+        </header>
 
     <section class="hero" aria-label="Abrir vídeo">
       <div class="hero-art" aria-hidden="true">
@@ -65,24 +82,156 @@
         </svg>
       </div>
       <label id="open-file-btn" class="btn-primary" for="file-input">Abrir vídeo do iPhone</label>
-      <input id="file-input" type="file" accept="video/*,.mp4,.mov,.m4v,.webm" hidden>
+      <input id="file-input" type="file" accept="video/*,.mp4,.mkv,.webm,.mov,.m4v,.avi,.ts,.m2ts,.wmv,.flv" hidden>
       <p class="footnote">O vídeo é reproduzido no próprio aparelho e não é enviado para lugar nenhum.</p>
+    </section>
+
+    <!-- ===================== NUVEM: TORBOX & GOFILE ===================== -->
+    <section id="cloud-section" class="group">
+      <div class="cloud-header-row">
+        <h2 class="group-title" style="margin-bottom: 0;">Reprodução na Nuvem (Online)</h2>
+        <span class="cloud-badge-tag">Gofile & Torbox</span>
+      </div>
+
+      <!-- Abas da Nuvem (Estilo iOS Segmented) -->
+      <div class="cloud-tabs-nav" role="tablist">
+        <button id="tab-cloud-link" class="cloud-tab active" role="tab" aria-selected="true">
+          <svg style="width:14px;height:14px;margin-right:5px;"><use href="#i-link"/></svg>
+          Colar Link
+        </button>
+        <button id="tab-cloud-torbox" class="cloud-tab" role="tab" aria-selected="false">
+          <svg style="width:14px;height:14px;margin-right:5px;"><use href="#i-cloud"/></svg>
+          Torbox
+        </button>
+        <button id="tab-cloud-history" class="cloud-tab" role="tab" aria-selected="false">
+          <svg style="width:14px;height:14px;margin-right:5px;"><use href="#i-sparkles"/></svg>
+          Histórico Recente
+        </button>
+      </div>
+
+      <!-- Painel 1: Colar Link Direto ou Gofile -->
+      <div id="cloud-panel-link" class="cloud-panel active">
+        <div class="list">
+          <div class="list-item pc-server-connect">
+            <span class="list-icon" style="--c:#32ade6"><svg><use href="#i-link"/></svg></span>
+            <div class="list-text" style="flex:1">
+              <input id="cloud-url-input" type="url" placeholder="https://gofile.io/d/... ou link .mp4 direto" class="server-input" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off">
+            </div>
+            <button id="btn-cloud-play" class="btn-connect" style="background:#0a84ff;min-width:75px;">Assistir</button>
+            <button id="btn-cloud-play-4k" class="btn-connect" style="background:#5856d6;min-width:88px;margin-left:6px;" title="Transmite em 4K suave usando a GPU do seu PC em tempo real (Sem baixar!)">⚡ 4K Suave</button>
+          </div>
+        </div>
+        <div class="cloud-quick-tips">
+          <small>💡 <b>Dica Gofile:</b> Para tocar direto, no Gofile clique com o botão direito (ou segure) em <b>Download</b> → <b>Copiar link</b>. Cole aqui e assista na hora!</small>
+        </div>
+      </div>
+
+      <!-- Painel 2: Torbox Torrents -->
+      <div id="cloud-panel-torbox" class="cloud-panel" hidden>
+        <div class="list">
+          <div class="list-item pc-server-connect">
+            <span class="list-icon" style="--c:#af52de"><svg><use href="#i-cloud"/></svg></span>
+            <div class="list-text" style="flex:1">
+              <input id="torbox-key-input" type="password" placeholder="API Key do Torbox (torbox.app/settings)" class="server-input" spellcheck="false" autocomplete="off">
+            </div>
+            <button id="btn-torbox-save-key" class="btn-connect" style="background:#5856d6">Salvar</button>
+          </div>
+        </div>
+        <div class="server-helpers">
+          <button id="btn-torbox-refresh" class="btn-discover">
+            <svg style="width:15px;height:15px;margin-right:6px;"><use href="#i-sparkles"/></svg>
+            Carregar Meus Torrents
+          </button>
+          <a href="https://torbox.app/settings" target="_blank" rel="noopener" class="server-pill" style="text-decoration:none;display:inline-flex;align-items:center;">
+            Pegar API Key ↗
+          </a>
+        </div>
+        <div id="torbox-torrent-list" class="video-gallery-grid" style="margin-top: 14px;" hidden></div>
+        <div id="torbox-empty-msg" class="cloud-empty-hint" hidden>
+          <small>Nenhum vídeo VR encontrado na sua conta do Torbox.</small>
+        </div>
+      </div>
+
+      <!-- Painel 3: Histórico de Vídeos Online -->
+      <div id="cloud-panel-history" class="cloud-panel" hidden>
+        <div class="cloud-history-header">
+          <span class="cloud-history-title">Vídeos assistidos recentemente</span>
+          <button id="btn-clear-cloud-history" class="server-pill" style="font-size:12px;padding:4px 10px;border:none;">
+            <svg style="width:12px;height:12px;margin-right:4px;vertical-align:-1px;"><use href="#i-trash"/></svg> Limpar
+          </button>
+        </div>
+        <div id="cloud-history-list" class="video-gallery-grid" style="margin-top: 10px;"></div>
+        <div id="cloud-history-empty" class="cloud-empty-hint">
+          <small>Seu histórico de reprodução online aparecerá aqui para acesso rápido com 1 toque.</small>
+        </div>
+      </div>
+      <p id="cloud-status-msg" class="group-footer">Reproduza direto da nuvem pelo iPhone sem precisar baixar arquivos no aparelho.</p>
     </section>
 
     <!-- Servidor local no PC (Fase 2) -->
     <section id="pc-server-section" class="group">
-      <h2 class="group-title">Vídeos do Computador (Rede Local)</h2>
-      <div class="list">
-        <div class="list-item pc-server-connect">
-          <span class="list-icon" style="--c:#5856d6"><svg><use href="#i-desktop"/></svg></span>
-          <div class="list-text" style="flex:1">
-            <input id="server-url-input" type="text" placeholder="https://192.168.x.x:8443" class="server-input" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+        <h2 id="pc-server-title" class="group-title" style="margin-bottom: 0;">Pastas e Vídeos do Computador</h2>
+        <span id="pc-server-badge" class="cloud-badge-tag" style="background: rgba(88,86,214,0.18); color: #a29bfe; font-size: 11px;">Local</span>
+      </div>
+
+      <!-- Barra de Pastas Monitoradas (Desktop e Web) -->
+      <div id="monitored-folders-bar" style="margin-bottom: 12px; display: flex; flex-direction: column; gap: 8px;">
+        <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
+          <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+            <span style="font-size: 12px; font-weight: 600; color: #8e8e93; text-transform: uppercase; letter-spacing: 0.5px;">Pastas:</span>
+            <div id="monitored-folders-list" style="display: inline-flex; flex-wrap: wrap; gap: 6px;"></div>
           </div>
-          <button id="btn-connect-server" class="btn-connect">Conectar</button>
+          <div style="display: flex; gap: 6px;">
+            <button id="btn-add-folder" class="server-pill" style="cursor: pointer; background: rgba(10, 132, 255, 0.15); color: #0a84ff; border: 1px solid rgba(10, 132, 255, 0.3);">
+              <svg style="width:12px;height:12px;margin-right:4px;vertical-align:-1px;"><use href="#i-plus"/></svg> Adicionar Pasta
+            </button>
+            <button id="btn-rescan-folders" class="server-pill" style="cursor: pointer;">
+              🔄 Atualizar
+            </button>
+          </div>
         </div>
       </div>
-      <div id="pc-video-list" class="list" style="margin-top: 10px;" hidden></div>
+
+      <!-- Conexão via Rede (Exibida principalmente no Web/iPhone) -->
+      <div id="pc-server-connect-wrap">
+        <div class="list">
+          <div class="list-item pc-server-connect">
+            <span class="list-icon" style="--c:#5856d6"><svg><use href="#i-desktop"/></svg></span>
+            <div class="list-text" style="flex:1">
+              <input id="server-url-input" type="text" placeholder="https://vrplayer.local:8443" class="server-input" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off">
+            </div>
+            <button id="btn-connect-server" class="btn-connect">Conectar</button>
+          </div>
+        </div>
+        <div class="server-helpers">
+          <button id="btn-discover-server" class="btn-discover">
+            <svg style="width:15px;height:15px;margin-right:6px;"><use href="#i-sparkles"/></svg>
+            Buscar Servidor na Rede
+          </button>
+          <div class="quick-pill-row">
+            <span class="quick-pill-label">Atalhos:</span>
+            <button class="server-pill" data-target="https://vrplayer.local:8443">vrplayer.local:8443</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="pc-video-list" class="video-gallery-grid" style="margin-top: 14px;" hidden></div>
       <p id="pc-server-msg" class="group-footer">Transmita vídeos do seu PC via Wi-Fi sem gastar a memória do iPhone.</p>
+    </section>
+
+    <!-- Otimizador em Lote -->
+    <section id="batch-optimizer-section" class="group">
+      <h2 class="group-title">Otimizador em Lote (FFmpeg)</h2>
+      <div class="list">
+        <div id="btn-open-batch-home" class="list-item clickable">
+          <span class="list-icon" style="--c:#30d158">⚡</span>
+          <div class="list-text">
+            <strong>Otimizar Pasta de Vídeos</strong>
+            <small>Converte H.265 (HEVC), MKV, AVI e áudio AC-3 para MP4 (H.264) compatível com iPhone</small>
+          </div>
+        </div>
+      </div>
     </section>
 
     <section id="install-tip" class="group" hidden>
@@ -125,7 +274,12 @@
       </ul>
       <p class="group-footer">Compatível com controles de Xbox, PlayStation, Joy-Con, MFi e mini controles VR Bluetooth no iPhone e no PC.</p>
     </section>
-  </main>
+  </div>
+
+  <!-- Espelho Direito (Olho Direito no Modo Óculos da Tela Inicial) -->
+  <div id="home-pane-mirror" class="home-pane right" aria-hidden="true"></div>
+</div>
+</main>
 
   <!-- ===================== PLAYER ===================== -->
   <section id="player" class="screen paused" hidden aria-label="Reprodutor">
@@ -133,8 +287,22 @@
     <video id="video" playsinline webkit-playsinline preload="auto"></video>
 
     <div id="hud" class="hud" aria-live="polite">
-      <div class="hud-eye left"><span id="hud-l"></span></div>
-      <div class="hud-eye right"><span id="hud-r"></span></div>
+      <div class="hud-eye left"><span id="hud-l"></span><div id="hud-tel-l" class="hud-telemetry" hidden></div></div>
+      <div class="hud-eye right"><span id="hud-r"></span><div id="hud-tel-r" class="hud-telemetry" hidden></div></div>
+    </div>
+
+    <!-- Monitor de Performance e Telemetria flutuante na tela -->
+    <div id="telemetry-overlay" class="telemetry-overlay glass" hidden>
+      <div class="tel-head">
+        <span class="tel-led"></span>
+        <span id="tel-fps" class="tel-title">60 FPS</span>
+        <span id="tel-res" class="tel-badge">--</span>
+      </div>
+      <div class="tel-body">
+        <div class="tel-item"><span class="tel-k">Buffer Safari:</span> <span id="tel-buffer" class="tel-v">0.0s</span></div>
+        <div class="tel-item"><span class="tel-k">Quadros Perdidos:</span> <span id="tel-drops" class="tel-v">0 (0%)</span></div>
+        <div class="tel-item"><span class="tel-k">GPU / Stream:</span> <span id="tel-gpu" class="tel-v">--</span></div>
+      </div>
     </div>
 
     <div id="rotate-hint" class="rotate-hint">
@@ -148,6 +316,7 @@
         <div id="title" class="title glass"></div>
         <div class="top-actions glass">
           <button id="btn-recenter" class="icon-btn" aria-label="Centralizar visão"><svg><use href="#i-recenter"/></svg></button>
+          <button id="btn-telemetry" class="icon-btn" aria-label="Telemetria & Performance"><svg><use href="#i-pulse"/></svg></button>
           <button id="btn-format" class="icon-btn" aria-label="Formato do vídeo"><svg><use href="#i-format"/></svg></button>
           <button id="btn-settings" class="icon-btn" aria-label="Ajustes"><svg><use href="#i-sliders"/></svg></button>
           <button id="btn-headset" class="icon-btn" aria-label="Modo óculos"><svg><use href="#i-headset"/></svg></button>
@@ -174,61 +343,218 @@
       </div>
     </div>
 
-    <!-- Sheets -->
-    <div id="sheet-backdrop" class="sheet-backdrop"></div>
+    <!-- HUD Compacto Flutuante (Single-Slider Pill) -->
+    <div id="settings-pill" class="settings-pill" hidden role="region" aria-label="Ajuste fino de imagem e lente">
+      <!-- Painel Esquerdo (Padrão no Modo Tela e Olho Esquerdo no Modo Óculos) -->
+      <div class="pill-pane left">
+        <div class="pill-preset-row">
+          <button class="pill-preset-btn" type="button" aria-haspopup="listbox" aria-expanded="false" title="Preset de headset (X no controle ou Tecla P)">
+            <span class="pill-preset-kicker">Preset:</span>
+            <span class="pill-preset-name">VR Box 2.0</span>
+            <svg class="pill-preset-chevron" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <ul class="pill-preset-menu" role="listbox" hidden></ul>
+        </div>
 
-    <div id="sheet-format" class="sheet" role="dialog" aria-labelledby="sheet-format-title">
-      <div class="sheet-grabber"></div>
-      <div class="sheet-header">
-        <h2 id="sheet-format-title">Formato do vídeo</h2>
-        <button class="sheet-done" data-close>OK</button>
-      </div>
-      <p id="detect-caption" class="sheet-caption"></p>
-      <h3 class="section-label">Predefinições</h3>
-      <div id="presets" class="chips"></div>
-      <h3 class="section-label">Projeção</h3>
-      <div id="seg-projection" class="segmented">
-        <button data-value="360">360°</button>
-        <button data-value="180">180°</button>
-        <button data-value="fisheye">Olho de peixe</button>
-        <button data-value="flat">Plano</button>
-      </div>
-      <h3 class="section-label">Layout</h3>
-      <div id="seg-layout" class="segmented">
-        <button data-value="mono">Quadro único</button>
-        <button data-value="sbs">Lado a lado</button>
-        <button data-value="tb">Cima / baixo</button>
-      </div>
-      <div class="group-list spaced">
-        <label class="row" for="sw-swap"><span>Inverter olhos</span><input id="sw-swap" type="checkbox" class="switch"></label>
-      </div>
-      <p class="sheet-footnote">Ative se o 3D parecer estranho ou cansar a vista (olho esquerdo e direito trocados).</p>
-    </div>
+        <div class="pill-header">
+          <button class="pill-btn-nav pill-prev" aria-label="Ajuste anterior" title="Ajuste anterior (L1 / D-Pad Cima)">
+            <svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          
+          <div class="pill-title-group">
+            <span class="pill-label">Correção de Lente</span>
+            <span class="pill-val">0%</span>
+            <span class="pill-step-info">1 / 7</span>
+          </div>
 
-    <div id="sheet-settings" class="sheet" role="dialog" aria-labelledby="sheet-settings-title">
-      <div class="sheet-grabber"></div>
-      <div class="sheet-header">
-        <h2 id="sheet-settings-title">Ajustes</h2>
-        <button class="sheet-done" data-close>OK</button>
+          <div class="pill-actions">
+            <button class="pill-btn-action pill-reset" aria-label="Restaurar padrão" title="Restaurar padrão (Y / Triângulo)">
+              <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M3 3v5h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <button class="pill-btn-nav pill-next" aria-label="Próximo ajuste" title="Próximo ajuste (R1 / D-Pad Baixo)">
+              <svg viewBox="0 0 24 24"><path d="M9 18l6-6-6-6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <button class="pill-btn-action pill-close" aria-label="Fechar ajustes" title="Fechar (B / Esc)">
+              <svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="pill-slider-container">
+          <input type="range" class="pill-range" aria-label="Valor do ajuste">
+        </div>
       </div>
-      <h3 class="section-label">Imagem</h3>
-      <div class="group-list">
-        <div class="slider-row"><div class="slider-head"><span>Brilho</span><span id="sl-brightness-val" class="slider-val"></span></div><input id="sl-brightness" type="range"></div>
-        <div class="slider-row"><div class="slider-head"><span>Contraste</span><span id="sl-contrast-val" class="slider-val"></span></div><input id="sl-contrast" type="range"></div>
-      </div>
-      <h3 class="section-label">Óculos VR</h3>
-      <div class="group-list">
-        <div class="slider-row"><div class="slider-head"><span>Distância entre os olhos</span><span id="sl-ipd-val" class="slider-val"></span></div><input id="sl-ipd" type="range"></div>
-        <div class="slider-row"><div class="slider-head"><span>Campo de visão</span><span id="sl-fov-val" class="slider-val"></span></div><input id="sl-fov" type="range"></div>
-        <div class="slider-row"><div class="slider-head"><span>Correção da lente</span><span id="sl-distortion-val" class="slider-val"></span></div><input id="sl-distortion" type="range"></div>
-      </div>
-      <p class="sheet-footnote">Ajuste, encaixe o celular nos óculos e confira: as bordas devem parecer retas e as duas imagens devem se fundir sem esforço.</p>
-      <div class="group-list spaced">
-        <button id="btn-reset" class="row row-button">Restaurar padrões</button>
+
+      <!-- Painel Direito (Olho Direito no Modo Óculos Estéreo) -->
+      <div class="pill-pane right" aria-hidden="true">
+        <div class="pill-preset-row">
+          <button class="pill-preset-btn" type="button" tabindex="-1">
+            <span class="pill-preset-kicker">Preset:</span>
+            <span class="pill-preset-name">VR Box 2.0</span>
+            <svg class="pill-preset-chevron" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <ul class="pill-preset-menu" role="listbox" hidden></ul>
+        </div>
+
+        <div class="pill-header">
+          <button class="pill-btn-nav pill-prev" tabindex="-1">
+            <svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          
+          <div class="pill-title-group">
+            <span class="pill-label">Correção de Lente</span>
+            <span class="pill-val">0%</span>
+            <span class="pill-step-info">1 / 7</span>
+          </div>
+
+          <div class="pill-actions">
+            <button class="pill-btn-action pill-reset" tabindex="-1">
+              <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M3 3v5h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <button class="pill-btn-nav pill-next" tabindex="-1">
+              <svg viewBox="0 0 24 24"><path d="M9 18l6-6-6-6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <button class="pill-btn-action pill-close" tabindex="-1">
+              <svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="pill-slider-container">
+          <input type="range" class="pill-range" tabindex="-1" aria-label="Valor do ajuste">
+        </div>
       </div>
     </div>
   </section>
 
+  <!-- Sheets -->
+  <div id="sheet-backdrop" class="sheet-backdrop"></div>
+
+  <div id="sheet-format" class="sheet" role="dialog" aria-labelledby="sheet-format-title">
+    <div class="sheet-split-container">
+      <div id="format-pane-left" class="sheet-pane left">
+        <div class="sheet-grabber"></div>
+        <div class="sheet-header">
+          <h2 id="sheet-format-title">Formato do vídeo</h2>
+          <button class="sheet-done" data-close>OK</button>
+        </div>
+        <p id="detect-caption" class="sheet-caption"></p>
+        <h3 class="section-label">Predefinições</h3>
+        <div id="presets" class="chips"></div>
+        <h3 class="section-label">Projeção</h3>
+        <div id="seg-projection" class="segmented">
+          <button data-value="360">360°</button>
+          <button data-value="180">180°</button>
+          <button data-value="fisheye">Olho de peixe</button>
+          <button data-value="flat">Plano</button>
+        </div>
+        <h3 class="section-label">Layout</h3>
+        <div id="seg-layout" class="segmented">
+          <button data-value="mono">Quadro único</button>
+          <button data-value="sbs">Lado a lado</button>
+          <button data-value="tb">Cima / baixo</button>
+        </div>
+        <div class="group-list spaced">
+          <label class="row" for="sw-swap"><span>Inverter olhos</span><input id="sw-swap" type="checkbox" class="switch"></label>
+        </div>
+        <p class="sheet-footnote">Ative se o 3D parecer estranho ou cansar a vista (olho esquerdo e direito trocados).</p>
+
+        <!-- Calibração Rápida da Lente Olho de Peixe no Formato -->
+        <div id="box-fisheye-format" hidden>
+          <h3 class="section-label" style="margin-top:14px;">Lente Olho de Peixe (Fisheye)</h3>
+          <div class="chips" id="fe-presets-format">
+            <button class="chip" type="button" data-fov="180" data-scale="1.0">180° Padrão</button>
+            <button class="chip" type="button" data-fov="190" data-scale="1.02">190° Canon RF</button>
+            <button class="chip" type="button" data-fov="200" data-scale="1.04">200° MKX200</button>
+            <button class="chip" type="button" data-fov="220" data-scale="1.06">220° Ampla</button>
+          </div>
+          <div class="group-list" style="margin-top:8px;">
+            <div class="slider-row"><div class="slider-head"><span>Abertura da lente (FOV)</span><span id="sl-fe-fov-fmt-val" class="slider-val">180°</span></div><input id="sl-fe-fov-fmt" type="range" min="160" max="230" step="1" value="180"></div>
+            <div class="slider-row"><div class="slider-head"><span>Enquadramento / Zoom</span><span id="sl-fe-scale-fmt-val" class="slider-val">100%</span></div><input id="sl-fe-scale-fmt" type="range" min="0.85" max="1.25" step="0.005" value="1.0"></div>
+          </div>
+        </div>
+
+        <h3 class="section-label">Ambiente Virtual (Modo Cinema / Plano)</h3>
+        <div id="seg-env-format" class="segmented">
+          <button data-value="cinema">Cinema IMAX</button>
+          <button data-value="space">Cosmos</button>
+          <button data-value="grid">Cyber Grid</button>
+          <button data-value="void">Vazio</button>
+        </div>
+
+        <div class="group-list spaced">
+          <button id="btn-toggle-smooth-stream" class="row row-button" style="color: #bf5af2;">⚡ Ativar Modo 4K Suave (GPU do PC em tempo real)</button>
+          <button id="btn-show-codecs" class="row row-button" style="color: var(--accent);">Diagnóstico de Codecs & GPU</button>
+          <button id="btn-show-batch" class="row row-button" style="color: var(--green);">⚡ Otimizar Pasta de Vídeos em Lote</button>
+          <button id="btn-reset" class="row row-button">Restaurar padrões de ajuste</button>
+        </div>
+      </div>
+
+      <!-- Espelho Direito (Olho Direito no Modo Óculos Estéreo) -->
+      <div id="format-pane-right" class="sheet-pane right" aria-hidden="true" hidden></div>
+    </div>
+  </div>
+
+  <div id="sheet-codecs" class="sheet" role="dialog" aria-labelledby="sheet-codecs-title">
+    <div class="sheet-grabber"></div>
+    <div class="sheet-header">
+      <h2 id="sheet-codecs-title">Codecs e Aceleração GPU</h2>
+      <button class="sheet-done" data-close>OK</button>
+    </div>
+    <div id="codec-diagnostics-content" class="codec-info-container"></div>
+  </div>
+
+  <!-- Sheet: Otimizador em Lote -->
+  <div id="sheet-batch" class="sheet" role="dialog" aria-labelledby="sheet-batch-title">
+    <div class="sheet-grabber"></div>
+    <div class="sheet-header">
+      <h2 id="sheet-batch-title">Otimizar Pasta de Vídeos</h2>
+      <button class="sheet-done" data-close>OK</button>
+    </div>
+    <div class="batch-container">
+      <div class="batch-folder-bar">
+        <input id="batch-folder-input" type="text" class="batch-folder-input" placeholder="Pasta de vídeos (ex: E:\MeusVR)" spellcheck="false" autocomplete="off">
+        <button id="btn-batch-browse" class="btn-connect" style="background:#5856d6">Escolher</button>
+        <button id="btn-batch-scan" class="btn-connect">Escanear</button>
+      </div>
+      <div id="batch-summary" class="batch-summary" hidden></div>
+      <div id="batch-selection-toolbar" class="batch-selection-toolbar" hidden>
+        <button id="btn-batch-select-all" class="batch-small-btn">Marcar Todos</button>
+        <button id="btn-batch-select-needed" class="batch-small-btn">Apenas Incompatíveis</button>
+        <button id="btn-batch-select-none" class="batch-small-btn">Desmarcar Todos</button>
+      </div>
+      <div id="batch-list" class="batch-file-list" hidden></div>
+      <div id="batch-progress-box" class="batch-progress-box" hidden>
+        <div class="batch-progress-head">
+          <span id="batch-progress-title">Processando...</span>
+          <span id="batch-progress-percent">0%</span>
+        </div>
+        <div class="progress-bar-bg"><div id="batch-progress-fill" class="progress-bar-fill"></div></div>
+        <div id="batch-progress-sub" class="batch-progress-sub">Iniciando...</div>
+      </div>
+      <div class="batch-actions">
+        <button id="btn-batch-start" class="btn-primary" style="flex:1" disabled>Iniciar Otimização</button>
+        <button id="btn-batch-cancel" class="btn-connect" style="background:#ff3b30;display:none">Cancelar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sheet: Seleção de Arquivos da Nuvem (Gofile / Torbox) -->
+  <div id="sheet-cloud-files" class="sheet" role="dialog" aria-labelledby="sheet-cloud-files-title">
+    <div class="sheet-grabber"></div>
+    <div class="sheet-header">
+      <div>
+        <h2 id="sheet-cloud-files-title">Arquivos da Nuvem</h2>
+        <small id="sheet-cloud-files-sub" style="color:var(--text-dim);font-size:12px;">Selecione o vídeo para assistir</small>
+      </div>
+      <button class="sheet-done" data-close>OK</button>
+    </div>
+    <div id="cloud-files-list-container" class="batch-file-list" style="max-height:60vh;overflow-y:auto;padding-bottom:20px;"></div>
+  </div>
+
   <div id="toast" class="toast glass" role="status"></div>
+
+  <!-- Cursor Virtual controlado por Gamepad Bluetooth -->
+  <div id="gamepad-cursor" class="virtual-cursor hidden" aria-hidden="true"></div>
 </body>
 </html>

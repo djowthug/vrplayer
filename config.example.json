@@ -1,0 +1,9 @@
+{
+  "videoDir": "./videos",
+  "videoDirs": [
+    "E:\\MeusVR",
+    "D:\\FilmesVR"
+  ],
+  "httpsPort": 8443,
+  "httpPort": 8080
+}
