@@ -19,6 +19,10 @@ settings:
     CURRENT_PROJECT_VERSION: 1
     MARKETING_VERSION: 1.0.0
     ENABLE_BITCODE: NO
+    INFOPLIST_KEY_UILaunchScreen_Generation: YES
+    INFOPLIST_KEY_UIRequiresFullScreen: YES
+    INFOPLIST_KEY_UIStatusBarHidden: YES
+    INFOPLIST_KEY_UIViewControllerBasedStatusBarAppearance: NO
 
 targets:
   VRPlayer:
@@ -36,3 +40,7 @@ targets:
         CODE_SIGNING_ALLOWED: NO
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: ""
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIRequiresFullScreen: YES
+        INFOPLIST_KEY_UIStatusBarHidden: YES
+        INFOPLIST_KEY_UIViewControllerBasedStatusBarAppearance: NO

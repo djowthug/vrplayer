@@ -158,7 +158,7 @@ public struct SCNVRViewContainer: UIViewRepresentable {
     }
 }
 
-// MARK: - CoreMotion Controller
+// MARK: - CoreMotion Controller (Landscape Right Optimized)
 
 public final class VRMotionController: ObservableObject {
     private let motionManager = CMMotionManager()
@@ -169,21 +169,23 @@ public final class VRMotionController: ObservableObject {
     
     public init() {}
     
-    public func start(onUpdate: ((SCNVector4) -> Void)? = nil) {
+    public func start(onUpdate: ((Float, Float, Float) -> Void)? = nil) {
         guard motionManager.isDeviceMotionAvailable else { return }
         motionManager.deviceMotionUpdateInterval = 1.0 / 60.0
         motionManager.startDeviceMotionUpdates(using: .xArbitraryZVertical, to: .main) { [weak self] motion, _ in
             guard let self = self, let motion = motion else { return }
             let attitude = motion.attitude
-            let q = attitude.quaternion
             
-            let pitch = Float(attitude.pitch) + self.pitchOffset
-            let roll = Float(attitude.roll)
-            let yaw = Float(attitude.yaw) + self.yawOffset
+            // Em modo Landscape Right (topo do aparelho voltado para a direita):
+            // - Olhar para cima/baixo (pitch) corresponde ao roll do hardware do iPhone invertido
+            // - Olhar para esquerda/direita (yaw) corresponde ao yaw do hardware invertido
+            // - Inclinar a cabeça lateralmente (roll) corresponde ao pitch do hardware
+            let pitch = Float(-attitude.roll) + self.pitchOffset
+            let yaw = Float(-attitude.yaw) + self.yawOffset
+            let roll = Float(-attitude.pitch)
             
-            let newOri = SCNVector4(x: pitch, y: yaw, z: roll, w: Float(q.w))
-            self.orientation = newOri
-            onUpdate?(newOri)
+            self.orientation = SCNVector4(x: pitch, y: yaw, z: roll, w: 1.0)
+            onUpdate?(pitch, yaw, roll)
         }
     }
     
@@ -197,8 +199,8 @@ public final class VRMotionController: ObservableObject {
             pitchOffset = 0
             return
         }
-        yawOffset = -Float(motion.attitude.yaw)
-        pitchOffset = -Float(motion.attitude.pitch)
+        yawOffset = Float(motion.attitude.yaw)
+        pitchOffset = Float(motion.attitude.roll)
     }
 }
 
@@ -208,18 +210,24 @@ public final class VRPlayerViewModel: ObservableObject {
     public let video: VideoItem
     public let serverBaseURL: String
     
+    // Playback State
     @Published public var player: AVPlayer?
     @Published public var isPlaying: Bool = true
     @Published public var currentTime: Double = 0
-    @Published public var duration: Double = 0
+    @Published public var duration: Double = 1.0
     @Published public var isSeeking: Bool = false
     @Published public var showControls: Bool = true
     
+    // VR Modes & Settings
     @Published public var projection: VRProjectionMode = .vr180
     @Published public var stereo: VRStereoMode = .sbs
     @Published public var displayMode: VRDisplayMode = .stereoHeadset
     @Published public var isEyeSwapped: Bool = false
+    @Published public var isGyroEnabled: Bool = true
+    @Published public var videoRotationAngle: Int = 0 // 0°, 90°, 180°, 270°
+    @Published public var currentFOV: CGFloat = 95.0   // 75° (Zoom), 95° (Padrão), 110° (Amplo)
     
+    // SceneKit Nodes
     public let leftScene = SCNScene()
     public let rightScene = SCNScene()
     public let leftCameraNode = SCNNode()
@@ -227,6 +235,10 @@ public final class VRPlayerViewModel: ObservableObject {
     public let leftDomeNode = SCNNode()
     public let rightDomeNode = SCNNode()
     
+    // Look Around State
+    public var gyroPitch: Float = 0
+    public var gyroYaw: Float = 0
+    public var gyroRoll: Float = 0
     public var panYaw: Float = 0
     public var panPitch: Float = 0
     
@@ -241,6 +253,13 @@ public final class VRPlayerViewModel: ObservableObject {
         self.serverBaseURL = serverBaseURL
         self.projection = video.initialProjection
         self.stereo = video.initialStereo
+        
+        // Inicializa com a duração do servidor de imediato para evitar '00:00'
+        if let d = video.duration, d > 0 {
+            self.duration = d
+        } else {
+            self.duration = 1.0
+        }
     }
     
     public func setup() {
@@ -252,7 +271,6 @@ public final class VRPlayerViewModel: ObservableObject {
         resetControlsTimer()
         loadProfileAndResume()
         
-        // Sync de perfil a cada 5 segundos
         profileTimer = Timer.publish(every: 5.0, on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] _ in
@@ -282,7 +300,7 @@ public final class VRPlayerViewModel: ObservableObject {
         let leftCamera = SCNCamera()
         leftCamera.zNear = 0.1
         leftCamera.zFar = 200.0
-        leftCamera.fieldOfView = 90
+        leftCamera.fieldOfView = currentFOV
         leftCameraNode.camera = leftCamera
         leftCameraNode.position = SCNVector3(x: -0.032, y: 0, z: 0)
         leftScene.rootNode.addChildNode(leftCameraNode)
@@ -291,7 +309,7 @@ public final class VRPlayerViewModel: ObservableObject {
         let rightCamera = SCNCamera()
         rightCamera.zNear = 0.1
         rightCamera.zFar = 200.0
-        rightCamera.fieldOfView = 90
+        rightCamera.fieldOfView = currentFOV
         rightCameraNode.camera = rightCamera
         rightCameraNode.position = SCNVector3(x: 0.032, y: 0, z: 0)
         rightScene.rootNode.addChildNode(rightCameraNode)
@@ -311,13 +329,14 @@ public final class VRPlayerViewModel: ObservableObject {
         avPlayer.automaticallyWaitsToMinimizeStalling = true
         self.player = avPlayer
         
-        timeObserverToken = avPlayer.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.5, preferredTimescale: 600), queue: .main) { [weak self] time in
+        // Observer de tempo a cada 250ms
+        timeObserverToken = avPlayer.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.25, preferredTimescale: 600), queue: .main) { [weak self] time in
             guard let self = self else { return }
             if !self.isSeeking {
                 self.currentTime = time.seconds
             }
             let d = playerItem.duration.seconds
-            if !d.isNaN && d > 0 {
+            if !d.isNaN && d > 0 && abs(d - self.duration) > 0.5 {
                 self.duration = d
             }
         }
@@ -328,18 +347,31 @@ public final class VRPlayerViewModel: ObservableObject {
     }
     
     private func setupMotion() {
-        motionController.start { [weak self] _ in
-            self?.updateCameraOrientations()
+        motionController.start { [weak self] pitch, yaw, roll in
+            guard let self = self else { return }
+            self.gyroPitch = pitch
+            self.gyroYaw = yaw
+            self.gyroRoll = roll
+            self.updateCameraOrientations()
         }
     }
     
     public func updateCameraOrientations() {
-        let orientation = motionController.orientation
-        let eulerX = orientation.x + panPitch
-        let eulerY = orientation.y + panYaw
-        let eulerZ = orientation.z
+        let finalPitch: Float
+        let finalYaw: Float
+        let finalRoll: Float
         
-        let angles = SCNVector3(x: eulerX, y: eulerY, z: eulerZ)
+        if isGyroEnabled {
+            finalPitch = gyroPitch + panPitch
+            finalYaw = gyroYaw + panYaw
+            finalRoll = gyroRoll
+        } else {
+            finalPitch = panPitch
+            finalYaw = panYaw
+            finalRoll = 0
+        }
+        
+        let angles = SCNVector3(x: finalPitch, y: finalYaw, z: finalRoll)
         leftCameraNode.eulerAngles = angles
         rightCameraNode.eulerAngles = angles
     }
@@ -349,6 +381,29 @@ public final class VRPlayerViewModel: ObservableObject {
         panPitch = 0
         motionController.recenter()
         updateCameraOrientations()
+    }
+    
+    public func cycleVideoRotation() {
+        videoRotationAngle = (videoRotationAngle + 90) % 360
+        applyDomeRotation()
+    }
+    
+    public func cycleFOV() {
+        if currentFOV == 95.0 {
+            currentFOV = 110.0 // Grande Angular
+        } else if currentFOV == 110.0 {
+            currentFOV = 75.0  // Zoom
+        } else {
+            currentFOV = 95.0  // Padrão
+        }
+        leftCameraNode.camera?.fieldOfView = currentFOV
+        rightCameraNode.camera?.fieldOfView = currentFOV
+    }
+    
+    private func applyDomeRotation() {
+        let rotZ = Float(videoRotationAngle) * Float.pi / 180.0
+        leftDomeNode.eulerAngles = SCNVector3(x: 0, y: 0, z: rotZ)
+        rightDomeNode.eulerAngles = SCNVector3(x: 0, y: 0, z: rotZ)
     }
     
     public func rebuildGeometry() {
@@ -366,6 +421,7 @@ public final class VRPlayerViewModel: ObservableObject {
             rightDomeNode.position = SCNVector3(x: 0, y: 0, z: 0)
         }
         
+        applyDomeRotation()
         updateMaterials()
     }
     
@@ -443,7 +499,7 @@ public final class VRPlayerViewModel: ObservableObject {
     public func seekBy(_ seconds: Double) {
         guard let p = player else { return }
         let target = max(0, min(duration, currentTime + seconds))
-        p.seek(to: CMTime(seconds: target, preferredTimescale: 600))
+        p.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
         currentTime = target
         resetControlsTimer()
     }
@@ -451,7 +507,7 @@ public final class VRPlayerViewModel: ObservableObject {
     public func resetControlsTimer() {
         controlsTimer?.cancel()
         controlsTimer = Just(())
-            .delay(for: .seconds(4), scheduler: RunLoop.main)
+            .delay(for: .seconds(5), scheduler: RunLoop.main)
             .sink { [weak self] _ in
                 withAnimation(.easeInOut(duration: 0.25)) {
                     self?.showControls = false
@@ -474,7 +530,10 @@ public final class VRPlayerViewModel: ObservableObject {
                let prof = resp.profile {
                 DispatchQueue.main.async {
                     if prof.currentTime > 5 && !prof.completed {
-                        self.player?.seek(to: CMTime(seconds: prof.currentTime, preferredTimescale: 600))
+                        self.player?.seek(to: CMTime(seconds: prof.currentTime, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+                    }
+                    if prof.duration > 0 {
+                        self.duration = prof.duration
                     }
                     if let cfg = prof.profile {
                         if let p = cfg.projection, let projMode = VRProjectionMode(rawValue: p) {
@@ -544,9 +603,9 @@ public struct VRVideoPlayerView: View {
     public var body: some View {
         GeometryReader { geometry in
             ZStack {
-                Color.black.ignoresSafeArea()
+                Color.black.ignoresSafeArea(.all)
                 
-                // 3D VR Viewports
+                // 3D VR Viewports (Edge to Edge, sem letterboxing)
                 if vm.displayMode == .stereoHeadset {
                     HStack(spacing: 0) {
                         SCNVRViewContainer(scene: vm.leftScene, pointOfView: vm.leftCameraNode)
@@ -564,14 +623,14 @@ public struct VRVideoPlayerView: View {
                         .frame(width: geometry.size.width, height: geometry.size.height)
                 }
                 
-                // Touch Pan Gestures
+                // Touch Pan Gestures (funciona sempre, adicionando ao giroscópio)
                 Color.clear
                     .contentShape(Rectangle())
                     .gesture(
                         DragGesture()
                             .onChanged { value in
-                                vm.panYaw += Float(value.translation.width * 0.0003)
-                                vm.panPitch += Float(value.translation.height * 0.0003)
+                                vm.panYaw += Float(value.translation.width * 0.0006)
+                                vm.panPitch += Float(value.translation.height * 0.0006)
                                 vm.updateCameraOrientations()
                                 vm.resetControlsTimer()
                             }
@@ -592,11 +651,21 @@ public struct VRVideoPlayerView: View {
                 }
             }
         }
+        .ignoresSafeArea(.all)
         .statusBarHidden(true)
+        .persistentSystemOverlays(.hidden)
         .onAppear {
+            AppDelegate.orientationLock = .landscape
+            if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
+                windowScene.requestGeometryUpdate(.iOS(interfaceOrientations: .landscapeRight))
+            }
             vm.setup()
         }
         .onDisappear {
+            AppDelegate.orientationLock = .allButUpsideDown
+            if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
+                windowScene.requestGeometryUpdate(.iOS(interfaceOrientations: .allButUpsideDown))
+            }
             vm.cleanup()
         }
     }
@@ -606,7 +675,7 @@ public struct VRVideoPlayerView: View {
     private var vrControlsHUD: some View {
         VStack {
             // Top Bar
-            HStack(spacing: 16) {
+            HStack(spacing: 12) {
                 Button(action: { dismiss() }) {
                     Image(systemName: "xmark.circle.fill")
                         .font(.title2)
@@ -629,11 +698,6 @@ public struct VRVideoPlayerView: View {
                                 .background(Color.blue.opacity(0.8))
                                 .cornerRadius(4)
                         }
-                        if let codec = video.videoCodec {
-                            Text(codec.uppercased())
-                                .font(.system(size: 10))
-                                .foregroundColor(.gray)
-                        }
                         Text(vm.projection.displayName)
                             .font(.system(size: 10))
                             .foregroundColor(.cyan)
@@ -642,34 +706,56 @@ public struct VRVideoPlayerView: View {
                 
                 Spacer()
                 
+                // Botão de FOV / Zoom
+                Button(action: { vm.cycleFOV() }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        Text("FOV: \(Int(vm.currentFOV))°")
+                            .font(.caption)
+                            .fontWeight(.bold)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(Color.white.opacity(0.2))
+                    .foregroundColor(.white)
+                    .cornerRadius(20)
+                }
+                
+                // Botão Explícito: Modo VR (2 Telas) vs Tela Cheia (1 Tela)
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        vm.displayMode = (vm.displayMode == .stereoHeadset) ? .magicWindow : .stereoHeadset
+                    }
+                    vm.updateMaterials()
+                }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: vm.displayMode == .stereoHeadset ? "eyeglasses" : "iphone")
+                        Text(vm.displayMode == .stereoHeadset ? "👓 Modo VR (2 Telas)" : "📱 Tela Cheia (1 Tela)")
+                            .font(.caption)
+                            .fontWeight(.bold)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(vm.displayMode == .stereoHeadset ? Color.purple.opacity(0.85) : Color.blue.opacity(0.85))
+                    .foregroundColor(.white)
+                    .cornerRadius(20)
+                }
+                
+                // Botão de Recentralizar
                 Button(action: {
                     vm.recenter()
                 }) {
                     Label("Recentralizar", systemImage: "scope")
                         .font(.caption)
                         .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
+                        .padding(.vertical, 7)
                         .background(Color.black.opacity(0.6))
                         .foregroundColor(.white)
                         .cornerRadius(20)
                 }
-                
-                Button(action: {
-                    withAnimation {
-                        vm.displayMode = (vm.displayMode == .stereoHeadset) ? .magicWindow : .stereoHeadset
-                    }
-                    vm.updateMaterials()
-                }) {
-                    Image(systemName: vm.displayMode.iconName)
-                        .font(.title3)
-                        .padding(8)
-                        .background(Color.black.opacity(0.6))
-                        .foregroundColor(.white)
-                        .clipShape(Circle())
-                }
             }
             .padding()
-            .background(LinearGradient(colors: [Color.black.opacity(0.8), Color.clear], startPoint: .top, endPoint: .bottom))
+            .background(LinearGradient(colors: [Color.black.opacity(0.85), Color.clear], startPoint: .top, endPoint: .bottom))
             
             Spacer()
             
@@ -693,12 +779,13 @@ public struct VRVideoPlayerView: View {
                         .foregroundColor(.white)
                 }
             }
-            .padding(.vertical, 20)
+            .padding(.vertical, 16)
             
             Spacer()
             
-            // Bottom Scrubber and Settings Bar
-            VStack(spacing: 12) {
+            // Bottom Scrubber and Quick Settings Bar
+            VStack(spacing: 10) {
+                // Barra de Progresso com tempo e duração real
                 HStack(spacing: 12) {
                     Text(formatTime(vm.currentTime))
                         .font(.caption)
@@ -716,8 +803,8 @@ public struct VRVideoPlayerView: View {
                         in: 0...max(vm.duration, 1),
                         onEditingChanged: { editing in
                             if !editing {
-                                vm.player?.seek(to: CMTime(seconds: vm.currentTime, preferredTimescale: 600)) { _ in
-                                    vm.isSeeking = false
+                                vm.player?.seek(to: CMTime(seconds: vm.currentTime, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { [weak vm] _ in
+                                    vm?.isSeeking = false
                                 }
                             }
                         }
@@ -730,7 +817,9 @@ public struct VRVideoPlayerView: View {
                         .monospacedDigit()
                 }
                 
-                HStack(spacing: 16) {
+                // Controles de Projeção, Estereoscopia, Giroscópio e Rotação
+                HStack(spacing: 12) {
+                    // Projeção
                     Menu {
                         ForEach(VRProjectionMode.allCases) { mode in
                             Button(action: {
@@ -756,6 +845,7 @@ public struct VRVideoPlayerView: View {
                         .cornerRadius(12)
                     }
                     
+                    // Estereoscopia
                     Menu {
                         ForEach(VRStereoMode.allCases) { s in
                             Button(action: {
@@ -781,6 +871,7 @@ public struct VRVideoPlayerView: View {
                         .cornerRadius(12)
                     }
                     
+                    // Inverter Olhos (Swap)
                     Button(action: {
                         vm.isEyeSwapped.toggle()
                         vm.updateMaterials()
@@ -793,6 +884,39 @@ public struct VRVideoPlayerView: View {
                         .padding(.horizontal, 10)
                         .padding(.vertical, 6)
                         .background(vm.isEyeSwapped ? Color.blue : Color.white.opacity(0.2))
+                        .foregroundColor(.white)
+                        .cornerRadius(12)
+                    }
+                    
+                    // Ligar / Desligar Giroscópio
+                    Button(action: {
+                        vm.isGyroEnabled.toggle()
+                        vm.updateCameraOrientations()
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: vm.isGyroEnabled ? "location.fill" : "location.slash")
+                            Text(vm.isGyroEnabled ? "Giro: ON" : "Giro: OFF")
+                        }
+                        .font(.caption)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(vm.isGyroEnabled ? Color.green.opacity(0.8) : Color.gray.opacity(0.6))
+                        .foregroundColor(.white)
+                        .cornerRadius(12)
+                    }
+                    
+                    // Rotação Manual do Vídeo (0°, 90°, 180°, 270°)
+                    Button(action: {
+                        vm.cycleVideoRotation()
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "rotate.right")
+                            Text("↻ \(vm.videoRotationAngle)°")
+                        }
+                        .font(.caption)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(vm.videoRotationAngle != 0 ? Color.orange : Color.white.opacity(0.2))
                         .foregroundColor(.white)
                         .cornerRadius(12)
                     }
