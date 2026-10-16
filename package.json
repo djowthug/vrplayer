@@ -6,19 +6,32 @@
   "main": "electron/main.cjs",
   "scripts": {
     "start": "node server.js",
+    "dev": "node server.js",
     "cert": "node scripts/setup-cert.js",
     "electron": "electron .",
     "optimize": "node scripts/batch-optimize.js",
     "clean": "node scripts/clean.js",
     "clean:cache": "node scripts/clean.js --cache",
+    "clean:git": "node scripts/clean.js --git",
     "clean:all": "node scripts/clean.js --all",
-    "check": "node --check server.js && node --check electron/main.cjs && node --check electron/preload.cjs && node --check scripts/batch-optimize.js && node --check scripts/clean.js",
+    "check": "node --check server.js && node --check electron/binaries.cjs && node --check electron/main.cjs && node --check electron/preload.cjs && node --check scripts/bin-paths.js && node --check scripts/audio-probe.js && node --check scripts/thumbnailer.js && node --check scripts/batch-optimize.js && node --check scripts/clean.js && node --check scripts/cloud-service.js && node --check scripts/hls-streamer.js && node --check scripts/profiles-service.js && node --check scripts/net-utils.js && node --check scripts/setup-binaries.js && node --check scripts/setup-cert.js && node --check js/utils/format.js && node --check js/utils/video-profile.js && node --check js/detect.js && node --check js/cloud.js && node --check js/profiles.js && node --check js/environments.js && node --check js/projections.js && node --check js/renderer.js && node --check js/spatial-audio.js && node --check js/controls.js && node --check js/gamepad.js && node --check js/cursor.js && node --check js/ui/hud-layout.js && node --check js/ui/layout-editor.js && node --check js/ui/codecs-modal.js && node --check js/ui/batch-modal.js && node --check js/app.js && node --check sw.js && node --check tests/range.test.js && node --check tests/hls.test.js && node --check tests/projections.test.js && node --check tests/cloud.test.js && node --check tests/format.test.js && node --check tests/folders.test.js && node --check tests/hud-layout.test.js && node --check tests/audio-probe.test.js && node --check tests/spatial-audio.test.js && node --check tests/profiles.test.js && node --check tests/video-profile.test.js",
+    "test": "node --test tests/range.test.js tests/hls.test.js tests/projections.test.js tests/cloud.test.js tests/format.test.js tests/folders.test.js tests/hud-layout.test.js tests/audio-probe.test.js tests/spatial-audio.test.js tests/profiles.test.js tests/video-profile.test.js",
     "bin": "node scripts/setup-binaries.js",
     "setup:bin": "node scripts/setup-binaries.js",
-    "predist": "node scripts/setup-binaries.js",
+    "prebuild": "node scripts/clean.js && node scripts/setup-binaries.js",
+    "build": "electron-builder --win",
+    "build:portable": "electron-builder --win portable",
+    "build:dir": "electron-builder --win --dir",
+    "predist": "node scripts/clean.js && node scripts/setup-binaries.js",
+    "predist:portable": "node scripts/clean.js && node scripts/setup-binaries.js",
+    "predist:dir": "node scripts/clean.js && node scripts/setup-binaries.js",
     "dist": "electron-builder --win",
     "dist:portable": "electron-builder --win portable",
     "dist:dir": "electron-builder --win --dir"
+  },
+  "engines": {
+    "node": ">=20.6.0",
+    "npm": ">=9.0.0"
   },
   "keywords": [
     "vr",
@@ -47,11 +60,32 @@
     },
     "files": [
       "index.html",
+      "manifest.webmanifest",
+      "sw.js",
       "css/**/*",
       "js/**/*",
       "icons/**/*",
       "electron/**/*",
-      "package.json"
+      "package.json",
+      "!**/*.map",
+      "!**/*.tmp",
+      "!**/*.log",
+      "!**/*.bak",
+      "!**/*.backup",
+      "!**/.git*",
+      "!**/.cache*",
+      "!**/Thumbs.db",
+      "!**/.DS_Store",
+      "!**/.env*",
+      "!**/config*.json",
+      "!videos/**/*",
+      "!certs/**/*",
+      "!scripts/**/*",
+      "!scratch/**/*",
+      "!_site/**/*",
+      "!dist/**/*",
+      "!build/**/*",
+      "!out/**/*"
     ],
     "extraResources": [
       {
@@ -125,8 +159,5 @@
       "createStartMenuShortcut": true,
       "shortcutName": "VR Player"
     }
-  },
-  "dependencies": {
-    "bonjour-service": "^1.4.4"
   }
 }

@@ -10,6 +10,12 @@ const fs = require('fs');
  */
 function getBinaryPath(name) {
   const exe = process.platform === 'win32' && !name.endsWith('.exe') ? `${name}.exe` : name;
+  const envKey = `${name.toUpperCase().replace(/[^A-Z0-9]/g, '_')}_PATH`;
+
+  // 0. Variável de ambiente explícita (ex: FFMPEG_PATH, FFPROBE_PATH, MKCERT_PATH)
+  if (process.env[envKey] && fs.existsSync(process.env[envKey])) {
+    return process.env[envKey];
+  }
 
   // 1. Recursos empacotados pelo electron-builder (produção)
   if (process.resourcesPath) {

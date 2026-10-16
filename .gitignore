@@ -1,40 +1,100 @@
-# Sistema operacional e arquivos temporários
-Thumbs.db
-ehthumbs.db
-Desktop.ini
-.DS_Store
-*.tmp
-*.log
+# ==========================================
+# VR Player - Regras de Exclusão (.gitignore)
+# ==========================================
 
-# Dependências
-node_modules/
-
-# Build e executáveis
-dist/
-build/
-out/
-.icon-ico/
-bin/*.exe
-
-# Testes e vídeos locais
-_test/
-scratch/
-videos/*
-!videos/.gitkeep
-.cache/
-
-# Certificados locais gerados (mkcert)
+# 1. Credenciais, Segredos e Variáveis de Ambiente
+.env
+.env.*
+*.env
+!.env.example
+*.key
+*.pem
+*.crt
+*.cer
+*.pfx
+*.p12
+*.ca-bundle
 certs/
+id_rsa*
+*.token
 
-# Configuração local do usuário
+# 2. Configurações Locais e Dados Sensíveis
 config.json
 config copy.json
 config *.json
 config.*.json
 !config.example.json
+video-profiles.json
+video-profiles *.json
+video-profiles.*.json
+!video-profiles.example.json
 
-# IDEs e editores
+# 3. Dependências e Logs de Gerenciadores de Pacotes
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+.pnpm-store/
+
+# 4. Compilação, Empacotamento e Executáveis
+dist/
+build/
+out/
+_site/
+.icon-ico/
+bin/*.exe
+bin/*.zip
+bin/*.tar.gz
+bin/*.7z
+*.dmg
+*.pkg
+*.deb
+*.rpm
+*.AppImage
+
+# 5. Caches, Arquivos Temporários e Mídias Locais
+.cache/
+.temp/
+.tmp/
+*.tmp
+*.log
+*.pid
+*.seed
+*.pid.lock
+_test/
+scratch/
+videos/*
+!videos/.gitkeep
+coverage/
+.nyc_output/
+.eslintcache
+.stylelintcache
+
+# 6. Arquivos de Sistema Operacional
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Linux
+*~
+
+# 7. IDEs, Editores e Backups
 .vscode/
 .idea/
 *.sublime-project
 *.sublime-workspace
+*.swp
+*.swo
+*.bak
+*.backup

@@ -23,12 +23,72 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Validate code syntax and build integrity
+        run: |
+          npm run check
+
+      - name: Prune workspace temporary and OS residual files
+        run: |
+          # Descarte prévio de artefatos temporários, backups e arquivos de sistema
+          find . -type f \( \
+            -name "*.tmp" -o \
+            -name "*.log" -o \
+            -name "*.bak" -o \
+            -name "*.backup" -o \
+            -name "*.swp" -o \
+            -name "*.swo" -o \
+            -name "*~" -o \
+            -name ".DS_Store" -o \
+            -name "Thumbs.db" -o \
+            -name "ehthumbs.db" -o \
+            -name "Desktop.ini" -o \
+            -name "._*" \
+          \) -delete
+
+      - name: Stage PWA public assets
+        run: |
+          mkdir -p _site
+          cp index.html _site/
+          cp -r css _site/
+          cp -r js _site/
+          cp -r icons _site/
+          cp manifest.webmanifest _site/
+          cp sw.js _site/
+          cp .nojekyll _site/
+
+          # Higienização estrita de segurança e integridade no diretório de publicação
+          find _site -type f \( \
+            -name "*.tmp" -o \
+            -name "*.log" -o \
+            -name "*.bak" -o \
+            -name "*.backup" -o \
+            -name "*.swp" -o \
+            -name "*.swo" -o \
+            -name ".DS_Store" -o \
+            -name "Thumbs.db" -o \
+            -name "ehthumbs.db" -o \
+            -name "Desktop.ini" -o \
+            -name "._*" -o \
+            -name ".env*" -o \
+            -name "*.pem" -o \
+            -name "*.key" -o \
+            -name "*.crt" \
+          \) -delete
+
       - name: Setup Pages
         uses: actions/configure-pages@v5
+
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: '.'
+          path: '_site'
+
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4

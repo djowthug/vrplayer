@@ -49,13 +49,42 @@ Reprodutor imersivo de vídeos VR de alta performance: 360°, 360° 3D (cima/bai
 
 | Comando | Descrição |
 |---|---|
-| `npm start` | Inicia o servidor local de streaming e rede Wi-Fi (HTTP & HTTPS). |
+| `npm start` / `npm run dev` | Inicia o servidor local de streaming e rede Wi-Fi (HTTP & HTTPS). |
 | `npm run electron` | Abre o aplicativo Desktop nativo para Windows. |
 | `npm run cert` | Cria certificados HTTPS locais confiáveis para o iPhone (via `mkcert`). |
 | `npm run optimize` | Executa o utilitário CLI de otimização de vídeos em lote. |
 | `npm run setup:bin` | Verifica ou copia os binários estáticos (`ffmpeg`, `ffprobe`, `mkcert`) para a pasta `bin/`. |
-| `npm run clean` | Remove resíduos de compilação (`dist/`, `build/`) e arquivos temporários. |
-| `npm run dist` | Empacota o executável instalador e portátil do aplicativo para Windows x64. |
+| `npm run check` | Valida sintaxe e integridade estática de todos os arquivos JS/CJS. |
+| `npm run clean` | Remove resíduos de compilação (`dist/`, `build/`, `_site/`) e arquivos temporários. |
+| `npm run clean:cache` | Limpa diretórios de cache (`.cache/`, miniaturas e sessões temporárias HLS no SO). |
+| `npm run clean:git` | Poda referências remotas obsoletas (`git fetch --prune`) e otimiza o Git (`git gc`). |
+| `npm run clean:all` | Limpeza abrangente de builds, caches e manutenção do repositório Git. |
+| `npm run build` / `npm run dist` | Limpa temporários, valida binários e gera instalador e portátil Windows x64. |
+
+---
+
+## ⚙️ Variáveis de Ambiente e Configuração
+
+O VR Player suporta padronização determinística via arquivo `.env` e `config.json`:
+
+1. **Criar arquivo de ambiente local a partir do template:**
+   ```powershell
+   copy .env.example .env
+   # No Linux/macOS: cp .env.example .env
+   ```
+2. **Parâmetros Principais:**
+   - `HTTP_PORT` (padrão: `8080`) e `HTTPS_PORT` (padrão: `8443`): Portas de escuta.
+   - `HOST` / `BIND_ADDRESS` (padrão: `0.0.0.0`): Interface de rede para o streaming.
+   - `VIDEO_DIR` (padrão: `./videos`) e `VIDEO_DIRS`: Caminhos das bibliotecas de vídeo locais.
+   - `TORBOX_API_KEY` e `GOFILE_TOKEN`: Credenciais seguras para streaming e download em nuvem.
+   - `HARDWARE_ENCODER` (`auto`, `nvenc`, `qsv`, `cpu`): Seleção do acelerador de vídeo.
+   - `FFMPEG_PATH`, `FFPROBE_PATH`, `MKCERT_PATH`: Caminhos customizados opcionais para binários.
+
+Para builds determinísticos em esteiras CI/CD ou novas máquinas:
+```powershell
+npm ci
+npm run build
+```
 
 ---
 
@@ -106,27 +135,43 @@ vrplayer/
 ├── css/
 │   └── style.css            # Folha de estilos modo escuro estilo iOS
 ├── electron/
+│   ├── binaries.cjs         # Localizador de executáveis estáticos
 │   ├── main.cjs             # Processo principal Desktop, aceleração GPU e IPC
 │   └── preload.cjs          # Ponte segura IPC para a interface
 ├── icons/                   # Ícones da aplicação e PWA
 ├── js/
-│   ├── app.js               # Orquestrador do player, UI, lote e rede
+│   ├── app.js               # Orquestrador do player e ciclo de vida
+│   ├── cloud.js             # Cliente de nuvem Torbox e Gofile
 │   ├── controls.js          # Giroscópio, toques e orientação
+│   ├── cursor.js            # Cursor virtual para Gamepad
 │   ├── detect.js            # Heurística e análise de projeção de vídeo
+│   ├── environments.js      # Ambientes procedurais 3D (Cinema, Vazio)
 │   ├── gamepad.js           # Gerenciador de controles Bluetooth / Gamepad
 │   ├── projections.js       # Shaders WebGL para 360, 180, fisheye e 3D
 │   ├── renderer.js          # Pipeline Three.js estéreo e correção de lente
+│   ├── ui/
+│   │   ├── batch-modal.js   # Interface de otimização em lote com FFmpeg
+│   │   └── codecs-modal.js  # Painel de diagnóstico de codecs e GPU
+│   ├── utils/
+│   │   └── format.js        # Utilitários de bytes, duração e matemática (DRY)
 │   └── vendor/
 │       └── three.module.js  # Biblioteca Three.js empacotada
 ├── scripts/
 │   ├── batch-optimize.js    # Motor de otimização de vídeos em lote FFmpeg
+│   ├── bin-paths.js         # Wrapper ESM para localização de binários
 │   ├── clean.js             # Limpeza de pastas de build e temporários
-│   └── setup-cert.js        # Configuração de certificados SSL locais
-├── videos/                  # Diretório padrão para vídeos de streaming
+│   ├── cloud-service.js     # Serviço de streaming/download Torbox e Gofile
+│   ├── hls-streamer.js      # Transcoder dinâmico HLS com FFmpeg
+│   ├── net-utils.js         # Utilitários de rede e IPs locais
+│   ├── setup-binaries.js    # Validador de binários estáticos
+│   ├── setup-cert.js        # Configuração de certificados SSL locais
+│   └── thumbnailer.js       # Extrator de miniaturas para o catálogo
+├── videos/                  # Diretório padrão para vídeos de streaming (.gitkeep)
 ├── config.example.json      # Modelo de configuração de pastas e portas
+├── .env.example             # Template seguro padronizado de variáveis de ambiente
 ├── index.html               # Interface principal (PWA & Desktop)
 ├── manifest.webmanifest     # Manifesto PWA para tela cheia no iPhone
 ├── package.json             # Dependências, scripts e configuração do builder
 ├── server.js                # Servidor HTTP/HTTPS com Range Requests e CORS
-└── sw.js                    # Service Worker com cache offline v6
+└── sw.js                    # Service Worker com cache offline v15
 ```

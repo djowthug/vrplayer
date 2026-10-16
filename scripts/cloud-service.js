@@ -8,6 +8,7 @@ import http from 'http';
 import https from 'https';
 import { spawn } from 'child_process';
 import { getBinaryPath, setupBinaryEnv } from './bin-paths.js';
+import { formatBytes } from '../js/utils/format.js';
 
 setupBinaryEnv();
 
@@ -16,20 +17,11 @@ let gofileGuestToken = null;
 let gofileTokenExpires = 0;
 
 /**
- * Formata bytes em texto amigável
- */
-function formatBytes(bytes) {
-  if (!bytes || isNaN(bytes)) return '0 B';
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-  if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-  return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
-}
-
-/**
  * Obtém ou renova token de convidado do Gofile se necessário
  */
 async function getGofileToken(userToken = null) {
-  if (userToken && userToken.trim()) return userToken.trim();
+  const token = (userToken && userToken.trim()) || (process.env.GOFILE_TOKEN && process.env.GOFILE_TOKEN.trim());
+  if (token) return token;
   if (gofileGuestToken && Date.now() < gofileTokenExpires) {
     return gofileGuestToken;
   }

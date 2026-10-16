@@ -3,10 +3,36 @@ import * as THREE from 'three';
 import { createVideoMaterial, createDistortionMaterial, PROJECTION_MODE } from './projections.js';
 import { EnvironmentManager } from './environments.js';
 
+function buildCurvedPlaneGeometry(w, h, curvature = 0) {
+  if (curvature <= 0.02) {
+    return new THREE.PlaneGeometry(w, h, 1, 1);
+  }
+  const segsX = 64;
+  const segsY = 8;
+  const geom = new THREE.PlaneGeometry(w, h, segsX, segsY);
+  const pos = geom.attributes.position;
+  const maxAngle = (75 * Math.PI) / 180;
+  const arc = curvature * maxAngle;
+  const radius = w / arc;
+
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const theta = (x / (w / 2)) * (arc / 2);
+    const newZ = radius * (1 - Math.cos(theta));
+    const newX = radius * Math.sin(theta);
+    pos.setX(i, newX);
+    pos.setZ(i, newZ);
+  }
+  pos.needsUpdate = true;
+  geom.computeVertexNormals();
+  return geom;
+}
+
 export class VRRenderer {
   constructor(container, video) {
     this.container = container;
     this.video = video;
+    this.spatialAudio = null;
 
     const r = (this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' }));
     r.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -27,7 +53,7 @@ export class VRRenderer {
     this.material = createVideoMaterial(tex);
     this.sphere = new THREE.Mesh(new THREE.SphereGeometry(100, 96, 64), this.material);
     this.plane = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), this.material);
-    this.plane.position.set(0, 0, -6);
+    this.plane.position.set(0, 0, -2.8);
     this.plane.renderOrder = 10;
     this.material.depthWrite = true;
     this.material.depthTest = true;
@@ -55,6 +81,14 @@ export class VRRenderer {
     this.viewFov = 75;
     this.desktopOptics = { k1: 0, k2: 0, ca: 0, sharpening: 0 };
     this.fisheyeSettings = { fov: 180, scale: 1.0 };
+    this.screenDistance = 2.8;
+    this.desktopDistance = 6.0;
+    this.screenCurvature = 0.35;
+    this.desktopCurvature = 0.0;
+    this.screenScale = 1.0;
+    this._lastW = null;
+    this._lastH = null;
+    this._lastCurvature = null;
     this._rollQ = new THREE.Quaternion();
     this._zAxis = new THREE.Vector3(0, 0, 1);
 
@@ -72,7 +106,7 @@ export class VRRenderer {
     this.material.uniforms.mode.value = PROJECTION_MODE[this.format.projection] ?? 0;
     this.sphere.visible = !flat;
     this.plane.visible = flat;
-    this.envManager.setVisible(flat);
+    this.envManager.setVisible(flat && (!this.headset || this.envManager.currentEnv !== 'void'));
     this.updatePlane();
   }
 
@@ -90,11 +124,6 @@ export class VRRenderer {
   /** Calibração óptica do modo Tela (monocular): { k1, k2, ca, sharpening }. */
   setDesktopOptics(o = {}) {
     this.desktopOptics = { ...this.desktopOptics, ...o };
-  }
-
-  /** Atalho legado: define apenas a distorção K1 do modo Tela (K2 = 0.4·K1). */
-  setDesktopDistortion(distortion) {
-    this.setDesktopOptics({ k1: distortion, k2: distortion * 0.4 });
   }
 
   /** True quando o modo Tela precisa da passada de pós-processamento. */
@@ -132,7 +161,7 @@ export class VRRenderer {
     this.envManager.setEnvironment(envId);
   }
 
-  /** Dimensiona a "tela de cinema" de acordo com a proporção de um olho. */
+  /** Dimensiona e posiciona a "tela de cinema" (com curvatura opcional e distância personalizada). */
   updatePlane() {
     const vw = this.video.videoWidth || 16;
     const vh = this.video.videoHeight || 9;
@@ -140,10 +169,42 @@ export class VRRenderer {
     const { layout } = this.format;
     if (layout === 'sbs' && r > 2.5) r /= 2;      // SBS completo (ex.: 3840x1080)
     if (layout === 'tb' && r < 1.2) r *= 2;       // TB completo (ex.: 1920x2160)
-    const h = 4;
+    const scale = this.screenScale || 1.0;
+    const h = 4 * scale;
     const w = h * r;
-    this.plane.scale.set(w, h, 1);
+
+    // No modo óculos (headset), usa distância e curvatura imersivas padrão; no modo desktop, mantém valores confortáveis de monitor
+    const curv = this.headset ? (this.screenCurvature ?? 0.35) : (this.desktopCurvature ?? 0.0);
+    if (this._lastW !== w || this._lastH !== h || this._lastCurvature !== curv) {
+      this._lastW = w;
+      this._lastH = h;
+      this._lastCurvature = curv;
+      if (this.plane.geometry) this.plane.geometry.dispose();
+      this.plane.geometry = buildCurvedPlaneGeometry(w, h, curv);
+      this.plane.scale.set(1, 1, 1);
+    }
+
+    if (this.material?.uniforms?.curvature) {
+      this.material.uniforms.curvature.value = curv;
+    }
+
+    const dist = this.headset ? (this.screenDistance || 2.8) : (this.desktopDistance || 6.0);
+    this.plane.position.set(0, 0, -dist);
     this.envManager.updateScreenSize(w, h);
+  }
+
+  /** Ajusta parâmetros do Modo Cinema (distância virtual, curvatura IMAX e escala). */
+  setCinemaScreen({ distance, curvature, scale } = {}) {
+    if (distance !== undefined) {
+      this.screenDistance = distance;
+      if (!this.headset) this.desktopDistance = distance;
+    }
+    if (curvature !== undefined) {
+      this.screenCurvature = curvature;
+      if (!this.headset) this.desktopCurvature = curvature;
+    }
+    if (scale !== undefined) this.screenScale = scale;
+    this.updatePlane();
   }
 
   setImage({ brightness = 0, contrast = 1, exposure = 0, saturation = 1, gamma = 1 } = {}) {
@@ -162,6 +223,9 @@ export class VRRenderer {
 
   setHeadset(on) {
     this.headset = on;
+    const flat = this.format.projection === 'flat';
+    this.envManager.setVisible(flat && (!this.headset || this.envManager.currentEnv !== 'void'));
+    this.updatePlane();
     this.resize();
   }
 
@@ -191,10 +255,27 @@ export class VRRenderer {
     this.postMaterial.uniforms.aspect.value = this.headset ? w / 2 / h : w / h;
   }
 
+  setSpatialAudio(spatialAudio) {
+    this.spatialAudio = spatialAudio;
+  }
+
   render(quaternion, dt = 0.016) {
     this.envManager.update(dt);
     const { renderer: r, camera, scene } = this;
-    camera.quaternion.copy(quaternion);
+
+    const isFlat = this.format.projection === 'flat';
+    const isHeadLocked = this.headset && isFlat;
+
+    if (isHeadLocked) {
+      // Modo Head-Locked: tela virtual ancorada na linha de visão central do usuário
+      camera.quaternion.set(0, 0, 0, 1);
+    } else {
+      camera.quaternion.copy(quaternion);
+    }
+
+    if (this.spatialAudio) {
+      this.spatialAudio.updateListenerFromCamera(camera);
+    }
 
     if (!this.headset) {
       camera.fov = this.viewFov;

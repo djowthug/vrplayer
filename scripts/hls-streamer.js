@@ -8,6 +8,7 @@ import os from 'os';
 import crypto from 'crypto';
 import { spawn, execFile } from 'child_process';
 import { getBinaryPath, setupBinaryEnv } from './bin-paths.js';
+import { probeAudioMetadata } from './audio-probe.js';
 
 // Injeta binários embutidos no PATH de execução
 setupBinaryEnv();
@@ -35,6 +36,35 @@ try {
  */
 export async function detectHardwareEncoder() {
   if (detectedEncoder) return detectedEncoder;
+
+  const forced = (process.env.HARDWARE_ENCODER || '').trim().toLowerCase();
+  if (forced === 'nvenc') {
+    detectedEncoder = {
+      id: 'h264_nvenc',
+      label: 'NVIDIA NVENC (Forçado via HARDWARE_ENCODER)',
+      isHardware: true,
+      vendor: 'NVIDIA'
+    };
+    return detectedEncoder;
+  }
+  if (forced === 'qsv') {
+    detectedEncoder = {
+      id: 'h264_qsv',
+      label: 'Intel Quick Sync (Forçado via HARDWARE_ENCODER)',
+      isHardware: true,
+      vendor: 'Intel'
+    };
+    return detectedEncoder;
+  }
+  if (forced === 'cpu' || forced === 'libx264') {
+    detectedEncoder = {
+      id: 'libx264',
+      label: 'CPU (libx264 - Forçado via HARDWARE_ENCODER)',
+      isHardware: false,
+      vendor: 'CPU'
+    };
+    return detectedEncoder;
+  }
 
   // 1. Tenta NVIDIA NVENC (h264_nvenc)
   try {
@@ -223,7 +253,7 @@ setInterval(() => {
       activeSessions.delete(key);
     }
   }
-}, 10000);
+}, 10000).unref();
 
 async function waitForPlaylist(playlistPath, maxWaitMs = 15000) {
   const start = Date.now();
@@ -252,9 +282,25 @@ async function waitForSegment(segmentPath, maxWaitMs = 6000) {
 }
 
 /**
- * Cria uma nova sessão FFmpeg para o arquivo, opcionalmente a partir de um timestamp de seek (-ss).
+ * Determina os argumentos de codificação de áudio para o FFmpeg no streaming HLS,
+ * preservando canais para Ambisonics (FOA - 4 canais) e Surround (5.1 - 6 canais).
+ * @param {string} spatialType - 'ambisonics-foa' | 'surround-5.1' | 'surround-7.1' | string
+ * @returns {string[]} Argumentos para o FFmpeg
  */
-async function createHlsSession(fullPath, relPath, startTime = 0, seekId = '0') {
+export function getHlsAudioArgs(spatialType) {
+  if (spatialType === 'ambisonics-foa') {
+    return ['-c:a', 'aac', '-b:a', '384k', '-ac', '4'];
+  }
+  if (spatialType === 'surround-5.1' || spatialType === 'surround-7.1') {
+    return ['-c:a', 'aac', '-b:a', '512k', '-ac', '6'];
+  }
+  return ['-c:a', 'aac', '-b:a', '256k', '-ac', '2'];
+}
+
+/**
+ * Cria uma nova sessão FFmpeg para o arquivo, opcionalmente a partir de um timestamp de seek (-ss) e modo espacial.
+ */
+async function createHlsSession(fullPath, relPath, startTime = 0, seekId = '0', spatialType = null) {
   const hash = crypto.createHash('md5').update(fullPath).digest('hex').slice(0, 12);
   const sessionDir = path.join(HLS_BASE_DIR, `${hash}_${seekId}`);
   if (fs.existsSync(sessionDir)) {
@@ -321,8 +367,11 @@ async function createHlsSession(fullPath, relPath, startTime = 0, seekId = '0') 
     );
   }
 
-  // Áudio: converte para AAC estéreo para manter sincronia A/V perfeita e compatibilidade total com iOS
-  args.push('-c:a', 'aac', '-b:a', '256k', '-ac', '2');
+  // Áudio: preserva canais de áudio espacial (Ambisonics FOA ou Surround 5.1/7.1) ou converte para estéreo compatível
+  const audioInfo = await probeAudioMetadata(fullPath);
+  const effectiveSpatialType = spatialType || audioInfo?.spatialType;
+  const audioArgs = getHlsAudioArgs(effectiveSpatialType);
+  args.push(...audioArgs);
 
   // Segmentação HLS: segmentos de 2 segundos para inicialização imediata e lista tipo EVENT
   args.push(
@@ -343,6 +392,7 @@ async function createHlsSession(fullPath, relPath, startTime = 0, seekId = '0') 
     console.log(`   ⏩ Ponto de partida (-ss): ${startTime.toFixed(1)} segundos`);
   }
   console.log(`   📐 Resolução original: ${probe.width}x${probe.height}${probe.is8k ? ' (Downscale ativo -> 3840px)' : ''}`);
+  console.log(`   🔊 Áudio HLS: ${audioArgs.join(' ')} (${effectiveSpatialType || 'padrão'})`);
 
   const child = spawn(getBinaryPath('ffmpeg'), args);
 
@@ -369,6 +419,8 @@ async function createHlsSession(fullPath, relPath, startTime = 0, seekId = '0') 
     lastAccess: Date.now(),
     encoder: encoderInfo,
     probe,
+    audioInfo,
+    spatialType: effectiveSpatialType,
   };
 
   activeSessions.set(hash, session);
@@ -378,15 +430,16 @@ async function createHlsSession(fullPath, relPath, startTime = 0, seekId = '0') 
 /**
  * Cria ou recupera uma sessão de transcodificação HLS em tempo real para o arquivo.
  */
-async function getOrCreateHlsSession(fullPath, relPath, startTime = 0, seekId = null) {
+async function getOrCreateHlsSession(fullPath, relPath, startTime = 0, seekId = null, spatialType = null) {
   const hash = crypto.createHash('md5').update(fullPath).digest('hex').slice(0, 12);
   let session = activeSessions.get(hash);
 
   if (session && session.process && !session.process.killed) {
     const diff = Math.abs((session.startTime || 0) - startTime);
     const seekIdDiff = seekId && session.seekId !== seekId;
-    if (diff > 1.5 || seekIdDiff) {
-      console.log(`[HLS] Reiniciando sessão ativa para "${session.name}" devido a seek (${session.startTime}s -> ${startTime}s)`);
+    const spatialDiff = spatialType && session.spatialType !== spatialType;
+    if (diff > 1.5 || seekIdDiff || spatialDiff) {
+      console.log(`[HLS] Reiniciando sessão ativa para "${session.name}" devido a ${spatialDiff ? 'alteração de perfil de áudio espacial' : 'seek'}`);
       terminateSession(session);
       activeSessions.delete(hash);
     } else {
@@ -403,13 +456,13 @@ async function getOrCreateHlsSession(fullPath, relPath, startTime = 0, seekId = 
   }
 
   const actualSeekId = seekId || (startTime > 0 ? Date.now().toString() : '0');
-  return createHlsSession(fullPath, relPath, startTime, actualSeekId);
+  return createHlsSession(fullPath, relPath, startTime, actualSeekId, spatialType);
 }
 
 /**
- * Reinicia explicitamente a sessão HLS para um ponto específico de seek (-ss).
+ * Reinicia explicitamente a sessão HLS para um ponto específico de seek (-ss) e modo de áudio espacial.
  */
-export async function restartHlsSession(fullPath, relPath, startTime = 0, seekId = null) {
+export async function restartHlsSession(fullPath, relPath, startTime = 0, seekId = null, spatialType = null) {
   const hash = crypto.createHash('md5').update(fullPath).digest('hex').slice(0, 12);
   const oldSession = activeSessions.get(hash);
   if (oldSession) {
@@ -418,7 +471,7 @@ export async function restartHlsSession(fullPath, relPath, startTime = 0, seekId
     activeSessions.delete(hash);
   }
   const actualSeekId = seekId || Date.now().toString();
-  const session = await createHlsSession(fullPath, relPath, startTime, actualSeekId);
+  const session = await createHlsSession(fullPath, relPath, startTime, actualSeekId, spatialType);
   const playlist = await waitForPlaylist(session.playlistPath);
   return { session, playlist, seekId: actualSeekId };
 }
@@ -430,8 +483,9 @@ export async function handleHlsSeekRequest(req, res, url, videoDir) {
   let relPath = url.searchParams.get('path') || url.searchParams.get('relPath');
   let startTime = parseFloat(url.searchParams.get('ss') || url.searchParams.get('t') || '0') || 0;
   let seekId = url.searchParams.get('s') || Date.now().toString();
+  let spatialType = url.searchParams.get('spatial') || url.searchParams.get('spatialType') || null;
 
-  const handleSeek = async (targetRel, targetTime, targetSeekId) => {
+  const handleSeek = async (targetRel, targetTime, targetSeekId, targetSpatial) => {
     if (!targetRel) {
       res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ error: 'Parâmetro "path" obrigatório' }));
@@ -450,9 +504,10 @@ export async function handleHlsSeekRequest(req, res, url, videoDir) {
     try {
       const probe = await probeMedia(fullPath);
       const safeTime = Math.max(0, Math.min(targetTime, Math.max(0, (probe.duration || 10) - 1)));
-      const { session, playlist, seekId: actualSeekId } = await restartHlsSession(fullPath, safeRel, safeTime, targetSeekId);
+      const { session, playlist, seekId: actualSeekId } = await restartHlsSession(fullPath, safeRel, safeTime, targetSeekId, targetSpatial);
 
-      const playlistUrl = `/hls/${encodeURIComponent(safeRel)}/master.m3u8?s=${actualSeekId}&ss=${safeTime.toFixed(2)}`;
+      const spatialParam = targetSpatial ? `&spatial=${encodeURIComponent(targetSpatial)}` : '';
+      const playlistUrl = `/hls/${encodeURIComponent(safeRel)}/master.m3u8?s=${actualSeekId}&ss=${safeTime.toFixed(2)}${spatialParam}`;
       res.writeHead(200, {
         'Content-Type': 'application/json; charset=utf-8',
         'Access-Control-Allow-Origin': '*',
@@ -481,13 +536,14 @@ export async function handleHlsSeekRequest(req, res, url, videoDir) {
         const finalPath = json.path || json.relPath || relPath;
         const finalTime = json.ss !== undefined ? parseFloat(json.ss) : (json.t !== undefined ? parseFloat(json.t) : startTime);
         const finalSeekId = json.s || json.seekId || seekId;
-        handleSeek(finalPath, finalTime, finalSeekId);
+        const finalSpatial = json.spatial || json.spatialType || spatialType;
+        handleSeek(finalPath, finalTime, finalSeekId, finalSpatial);
       } catch {
-        handleSeek(relPath, startTime, seekId);
+        handleSeek(relPath, startTime, seekId, spatialType);
       }
     });
   } else {
-    handleSeek(relPath, startTime, seekId);
+    handleSeek(relPath, startTime, seekId, spatialType);
   }
 }
 
@@ -519,6 +575,13 @@ export async function handleHlsRequest(req, res, urlOrPathname, videoDir) {
 
   const rawRel = match[1];
   const resource = match[2]; // 'master.m3u8' ou 'seg_...ts'
+  const cleanResource = path.basename(resource);
+  if (resource !== cleanResource || resource.includes('..') || resource.includes('/') || resource.includes('\\')) {
+    res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Acesso proibido: identificador de recurso inválido');
+    return;
+  }
+
   const relPath = decodeURIComponent(rawRel);
   const safeRel = path.normalize(relPath).replace(/^(\.\.[\/\\])+/, '');
   const fullPath = typeof videoDir === 'function' ? videoDir(safeRel) : path.join(videoDir, safeRel);
@@ -530,12 +593,13 @@ export async function handleHlsRequest(req, res, urlOrPathname, videoDir) {
   }
 
   // 1. Requisição do manifesto (.m3u8)
-  if (resource.endsWith('.m3u8')) {
+  if (cleanResource.endsWith('.m3u8')) {
     try {
       const startTime = parseFloat(searchParams.get('ss') || searchParams.get('t') || '0') || 0;
       const seekId = searchParams.get('s') || null;
+      const spatialType = searchParams.get('spatial') || searchParams.get('spatialType') || null;
 
-      const session = await getOrCreateHlsSession(fullPath, relPath, startTime, seekId);
+      const session = await getOrCreateHlsSession(fullPath, relPath, startTime, seekId, spatialType);
       session.lastAccess = Date.now();
 
       const playlistContent = await waitForPlaylist(session.playlistPath);
@@ -560,7 +624,7 @@ export async function handleHlsRequest(req, res, urlOrPathname, videoDir) {
   }
 
   // 2. Requisição de segmento de vídeo (.ts)
-  if (resource.endsWith('.ts')) {
+  if (cleanResource.endsWith('.ts')) {
     const hash = crypto.createHash('md5').update(fullPath).digest('hex').slice(0, 12);
     const session = activeSessions.get(hash);
 
@@ -569,7 +633,12 @@ export async function handleHlsRequest(req, res, urlOrPathname, videoDir) {
     }
 
     const sessionDir = session?.dir || path.join(HLS_BASE_DIR, hash);
-    const segmentPath = path.join(sessionDir, resource);
+    const segmentPath = path.resolve(sessionDir, cleanResource);
+    if (!segmentPath.startsWith(sessionDir)) {
+      res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Acesso proibido');
+      return;
+    }
 
     const exists = await waitForSegment(segmentPath);
     if (!exists) {

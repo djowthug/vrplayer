@@ -136,6 +136,14 @@ export class GamepadManager {
     const stickX = cleanVal(ax);
     const stickY = cleanVal(ay);
 
+    // Se o Editor de Layout estiver aberto, o analógico move o HUD suavemente
+    if (this.callbacks.isLayoutActive?.()) {
+      if (stickX !== 0 || stickY !== 0) {
+        this.callbacks.onLayoutStickMove?.(stickX * 22 * dt, stickY * 22 * dt);
+      }
+      return;
+    }
+
     // Se o HUD da pílula estiver aberto, pausa giro para estabilizar visão durante ajuste
     if (this.callbacks.isPillActive?.()) {
       return;
@@ -187,6 +195,67 @@ export class GamepadManager {
   }
 
   _handleStandardButton(index, justPressed, isPressed, holdTime, lastRepeat) {
+    // Modo de ajuste interativo do Layout do HUD
+    if (this.callbacks.isLayoutActive?.()) {
+      // Fechar e Salvar (B / Círculo ou Start ou Select/Back)
+      if ((index === 1 || index === 8 || index === 9) && justPressed) {
+        this.callbacks.onLayoutClose?.();
+        return;
+      }
+      // Alternar seguir centro óptico (X / Quadrado)
+      if (index === 2 && justPressed) {
+        this.callbacks.onLayoutToggleLens?.();
+        return;
+      }
+      // Restaurar valor do elemento ativo (Y / Triângulo)
+      if (index === 3 && justPressed) {
+        this.callbacks.onLayoutReset?.();
+        return;
+      }
+      // Elemento anterior (L1 / LB)
+      if (index === 4 && justPressed) {
+        this.callbacks.onLayoutPrev?.();
+        return;
+      }
+      // Próximo elemento (R1 / RB)
+      if (index === 5 && justPressed) {
+        this.callbacks.onLayoutNext?.();
+        return;
+      }
+      // Escala diminuir (L2 / LT)
+      if (index === 6) {
+        this._handleRepeatableLayoutAdjust('scale', -1, index, justPressed, isPressed, holdTime, lastRepeat);
+        return;
+      }
+      // Escala aumentar (R2 / RT)
+      if (index === 7) {
+        this._handleRepeatableLayoutAdjust('scale', 1, index, justPressed, isPressed, holdTime, lastRepeat);
+        return;
+      }
+      // Mover Cima (D-Pad Cima)
+      if (index === 12) {
+        this._handleRepeatableLayoutAdjust('moveY', -1, index, justPressed, isPressed, holdTime, lastRepeat);
+        return;
+      }
+      // Mover Baixo (D-Pad Baixo)
+      if (index === 13) {
+        this._handleRepeatableLayoutAdjust('moveY', 1, index, justPressed, isPressed, holdTime, lastRepeat);
+        return;
+      }
+      // Mover Esquerda (D-Pad Esquerda)
+      if (index === 14) {
+        this._handleRepeatableLayoutAdjust('moveX', -1, index, justPressed, isPressed, holdTime, lastRepeat);
+        return;
+      }
+      // Mover Direita (D-Pad Direita)
+      if (index === 15) {
+        this._handleRepeatableLayoutAdjust('moveX', 1, index, justPressed, isPressed, holdTime, lastRepeat);
+        return;
+      }
+      // Botão 0 (A / Cross) é reservado para cliques e seleção pelo cursor virtual
+      return;
+    }
+
     // Modo de ajuste da Pílula HUD
     if (this.callbacks.isPillActive?.()) {
       // Fechar (B / Círculo ou Start/Menu)
@@ -226,6 +295,18 @@ export class GamepadManager {
       }
       // Botão 0 (A / Cross) é reservado para cliques e seleção pelo cursor virtual
       return;
+    }
+
+    // Abrir o editor de layout segurando Y (botão 3) por 1.2 segundos
+    if (index === 3) {
+      if (isPressed && holdTime >= 1.2 && !this._btn3LongFired) {
+        this._btn3LongFired = true;
+        this.callbacks.onLayoutOpen?.();
+        return;
+      }
+      if (!isPressed) {
+        this._btn3LongFired = false;
+      }
     }
 
     // Mapeamento W3C Standard Gamepad:
@@ -272,15 +353,35 @@ export class GamepadManager {
       return;
     }
 
-    // Voltar vídeo (-10s)
-    if (index === 14 || index === 4 || index === 6) {
+    // Próximo vídeo (segurar L1 e apertar R1) / Vídeo anterior (segurar R1 e apertar L1)
+    if (index === 5 && justPressed && this._btnPrev.get(4)) {
+      this.callbacks.onNextVideo?.();
+      return;
+    }
+    if (index === 4 && justPressed && this._btnPrev.get(5)) {
+      this.callbacks.onPrevVideo?.();
+      return;
+    }
+
+    // Voltar vídeo (-10s com D-Pad Esquerda ou L1)
+    if (index === 14 || index === 4) {
       this._handleRepeatableSeek(-10, index, justPressed, isPressed, holdTime, lastRepeat);
       return;
     }
 
-    // Avançar vídeo (+10s)
-    if (index === 15 || index === 5 || index === 7) {
+    // Avançar vídeo (+10s com D-Pad Direita ou R1)
+    if (index === 15 || index === 5) {
       this._handleRepeatableSeek(10, index, justPressed, isPressed, holdTime, lastRepeat);
+      return;
+    }
+
+    // Zoom com Gatilhos (L2 / LT diminui zoom, R2 / RT aumenta zoom)
+    if (index === 6) {
+      this._handleRepeatableZoom(-1, index, justPressed, isPressed, holdTime, lastRepeat);
+      return;
+    }
+    if (index === 7) {
+      this._handleRepeatableZoom(1, index, justPressed, isPressed, holdTime, lastRepeat);
       return;
     }
 
@@ -296,6 +397,39 @@ export class GamepadManager {
   }
 
   _handleGenericButton(index, justPressed, isPressed, holdTime, lastRepeat) {
+    // Modo de ajuste interativo do Layout do HUD para mini controles
+    if (this.callbacks.isLayoutActive?.()) {
+      if ((index === 1 || index === 8 || index === 9) && justPressed) {
+        this.callbacks.onLayoutClose?.();
+        return;
+      }
+      if (index === 2 && justPressed) {
+        this.callbacks.onLayoutToggleLens?.();
+        return;
+      }
+      if (index === 3 && justPressed) {
+        this.callbacks.onLayoutReset?.();
+        return;
+      }
+      if ((index === 4 || index === 12) && justPressed) {
+        this.callbacks.onLayoutPrev?.();
+        return;
+      }
+      if ((index === 5 || index === 13) && justPressed) {
+        this.callbacks.onLayoutNext?.();
+        return;
+      }
+      if (index === 14) {
+        this._handleRepeatableLayoutAdjust('moveX', -1, index, justPressed, isPressed, holdTime, lastRepeat);
+        return;
+      }
+      if (index === 15) {
+        this._handleRepeatableLayoutAdjust('moveX', 1, index, justPressed, isPressed, holdTime, lastRepeat);
+        return;
+      }
+      return;
+    }
+
     // Modo de ajuste da Pílula HUD para mini controles
     if (this.callbacks.isPillActive?.()) {
       if ((index === 1 || index === 8 || index === 9) && justPressed) {
@@ -368,6 +502,24 @@ export class GamepadManager {
     }
   }
 
+  _handleRepeatableLayoutAdjust(type, val, index, justPressed, isPressed, holdTime, lastRepeat) {
+    const fire = () => {
+      if (type === 'moveX') this.callbacks.onLayoutMove?.(val, 0);
+      else if (type === 'moveY') this.callbacks.onLayoutMove?.(0, val);
+      else if (type === 'scale') this.callbacks.onLayoutScale?.(val);
+    };
+    if (justPressed) {
+      fire();
+      this._btnLastRepeat.set(index, 0);
+    } else if (isPressed && holdTime >= REPEAT_DELAY) {
+      const elapsedSinceRepeat = holdTime - REPEAT_DELAY - lastRepeat;
+      if (elapsedSinceRepeat >= 0.08) {
+        fire();
+        this._btnLastRepeat.set(index, holdTime - REPEAT_DELAY);
+      }
+    }
+  }
+
   _handleRepeatablePillAdjust(direction, index, justPressed, isPressed, holdTime, lastRepeat) {
     if (justPressed) {
       this.callbacks.onPillAdjust?.(direction);
@@ -389,6 +541,19 @@ export class GamepadManager {
       const elapsedSinceRepeat = holdTime - REPEAT_DELAY - lastRepeat;
       if (elapsedSinceRepeat >= REPEAT_RATE) {
         this.callbacks.onSeek?.(seconds);
+        this._btnLastRepeat.set(index, holdTime - REPEAT_DELAY);
+      }
+    }
+  }
+
+  _handleRepeatableZoom(dir, index, justPressed, isPressed, holdTime, lastRepeat) {
+    if (justPressed) {
+      this.callbacks.onZoom?.(dir);
+      this._btnLastRepeat.set(index, 0);
+    } else if (isPressed && holdTime >= REPEAT_DELAY) {
+      const elapsedSinceRepeat = holdTime - REPEAT_DELAY - lastRepeat;
+      if (elapsedSinceRepeat >= 0.12) {
+        this.callbacks.onZoom?.(dir);
         this._btnLastRepeat.set(index, holdTime - REPEAT_DELAY);
       }
     }

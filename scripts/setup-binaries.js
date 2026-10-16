@@ -9,6 +9,11 @@ if (!fs.existsSync(BIN_DIR)) {
 }
 
 function findSystemExecutable(name) {
+  const envKey = `${name.toUpperCase().replace(/[^A-Z0-9]/g, '_')}_PATH`;
+  if (process.env[envKey] && fs.existsSync(process.env[envKey])) {
+    return process.env[envKey];
+  }
+
   try {
     const out = execSync(`where.exe ${name}`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
     if (out) {

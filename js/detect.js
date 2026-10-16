@@ -17,6 +17,14 @@ export function detectFromName(name) {
   else if (/_mono_|_2d_/.test(t)) res.layout = 'mono';
 
   if (!res.projection && /_3d_/.test(t) && !res.layout) res.layout = 'sbs';
+
+  // Detecção de tags de áudio espacial (_ambix, _foa, _spatial, _5.1, _binaural)
+  if (/_ambix_|_foa_|_spatial_|_binaural_|_ambi_/.test(t) || /_spatial/.test(t)) {
+    res.spatialAudio = 'ambisonics-foa';
+  } else if (/_5_1_|_5\.1|surround_?5_?1/.test(t) || /5\.1/.test(n)) {
+    res.spatialAudio = 'surround-5.1';
+  }
+
   return res;
 }
 
@@ -129,3 +137,42 @@ export function guessFormat(name, vw, vh, analysis) {
   const source = hint.projection || hint.layout ? 'nome' : usedImage ? 'imagem' : 'proporção';
   return { projection, layout, source };
 }
+
+/**
+ * Realiza detecção automática completa: pistas no nome do arquivo → análise de frame (Canvas 2D) → proporção.
+ */
+export async function detectVideoFormat(videoElement, fileName) {
+  const hint = detectFromName(fileName || '');
+  if (hint.projection && hint.layout) {
+    return {
+      projection: hint.projection,
+      layout: hint.layout,
+      stereo: hint.layout,
+      swap: false,
+      source: 'nome',
+    };
+  }
+
+  let analysis = null;
+  try {
+    if (videoElement && videoElement.videoWidth && videoElement.videoHeight) {
+      analysis = analyzeFrame(videoElement);
+    }
+  } catch {}
+
+  const guessed = guessFormat(
+    fileName,
+    videoElement?.videoWidth || 0,
+    videoElement?.videoHeight || 0,
+    analysis
+  );
+
+  return {
+    projection: guessed.projection,
+    layout: guessed.layout,
+    stereo: guessed.layout,
+    swap: false,
+    source: guessed.source,
+  };
+}
+

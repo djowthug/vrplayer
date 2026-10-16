@@ -5,6 +5,8 @@ const os = require('os');
 const { execFile, spawn } = require('child_process');
 const { pathToFileURL } = require('url');
 const { getBinaryPath, setupBinaryEnv } = require('./binaries.cjs');
+const { formatBytes } = require('../js/utils/format.js');
+const { detectFromName: detectFormatFromName } = require('../js/detect.js');
 
 // Injeta os binários embutidos (resources/bin ou bin/) no PATH de execução
 setupBinaryEnv();
@@ -389,12 +391,6 @@ ipcMain.handle('media:cancelOptimization', () => {
 });
 
 // ---------------- Otimização em Lote (Batch) ----------------
-function formatBytes(bytes) {
-  if (!bytes) return '0 B';
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-  if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-  return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
-}
 
 async function scanFolderForBatch(folderPath) {
   const list = [];
@@ -515,22 +511,42 @@ function saveConfigFile(newData) {
   }
 }
 
-function detectFormatFromName(name) {
-  const n = (name || '').toLowerCase().replace(/\.[a-z0-9]+$/, '');
-  const t = '_' + n.replace(/[^a-z0-9]+/g, '_') + '_';
-  const res = {};
-
-  if (/fisheye|_fe_|_fish|_fe180|_mkx|_rf52/.test(t)) res.projection = 'fisheye';
-  else if (/(^|[^0-9])180([^0-9]|$)/.test(n) || /vr180/.test(t)) res.projection = '180';
-  else if (/(^|[^0-9])360([^0-9]|$)/.test(n)) res.projection = '360';
-
-  if (/_sbs|sbs_|_lr_|_lr180|_rl_|left_?right|_3dh_|side_?by_?side|_hsbs|_fsbs|_half_?sbs/.test(t)) res.layout = 'sbs';
-  else if (/_tb_|_ou_|_tab_|_3dv_|over_?under|top_?bottom|_htb|_ftb|_hou|_fou|_tb360|_360tb/.test(t)) res.layout = 'tb';
-  else if (/_mono_|_2d_/.test(t)) res.layout = 'mono';
-
-  if (!res.projection && /_3d_/.test(t) && !res.layout) res.layout = 'sbs';
-  return res;
+function getProfilesFilePath() {
+  const candidates = [
+    path.join(__dirname, '..', 'video-profiles.json'),
+    path.join(process.cwd(), 'video-profiles.json'),
+    path.join(app.getAppPath(), 'video-profiles.json'),
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
+  return path.join(__dirname, '..', 'video-profiles.json');
 }
+
+function loadProfilesJson() {
+  const p = getProfilesFilePath();
+  try {
+    if (!fs.existsSync(p)) return {};
+    return JSON.parse(fs.readFileSync(p, 'utf8') || '{}');
+  } catch (err) {
+    console.error('Erro ao ler video-profiles.json em Electron:', err);
+    return {};
+  }
+}
+
+function saveProfilesJson(data) {
+  const p = getProfilesFilePath();
+  try {
+    const tmp = `${p}.tmp.${Date.now()}`;
+    fs.writeFileSync(tmp, JSON.stringify(data || {}, null, 2), 'utf8');
+    fs.renameSync(tmp, p);
+    return true;
+  } catch (err) {
+    console.error('Erro ao salvar video-profiles.json em Electron:', err);
+    return false;
+  }
+}
+
 
 async function scanDirectoryRecursive(dir, baseDir, prefix, visited = new Set()) {
   const results = [];
@@ -558,13 +574,20 @@ async function scanDirectoryRecursive(dir, baseDir, prefix, visited = new Set())
             ? `${prefix}/${path.relative(baseDir, full).replace(/\\/g, '/')}`
             : path.relative(baseDir, full).replace(/\\/g, '/');
 
+          const subDir = path.relative(baseDir, path.dirname(full)).replace(/\\/g, '/');
+          const subfolder = (subDir && subDir !== '.') ? subDir : '';
+
           results.push({
             id: full,
             name: ent.name,
             relPath: rel,
             fullPath: full,
+            folderRoot: baseDir,
+            folderName: path.basename(baseDir),
+            subfolder,
             size: formatBytes(stat.size),
             sizeBytes: stat.size,
+            mtime: stat.mtimeMs || 0,
             url: pathToFileURL(full).toString(),
             formatHint: detectFormatFromName(ent.name),
             resolutionBadge: '',
@@ -611,14 +634,17 @@ ipcMain.handle('library:getLibrary', async () => {
   };
 });
 
-ipcMain.handle('library:addFolder', async () => {
-  if (!mainWindow) return null;
-  const result = await dialog.showOpenDialog(mainWindow, {
-    title: 'Adicionar Pasta com Vídeos VR',
-    properties: ['openDirectory'],
-  });
-  if (result.canceled || !result.filePaths.length) return null;
-  const newPath = result.filePaths[0];
+ipcMain.handle('library:addFolder', async (_event, customPath) => {
+  let newPath = typeof customPath === 'string' && customPath.trim() ? customPath.trim() : null;
+  if (!newPath) {
+    if (!mainWindow) return null;
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Adicionar Pasta com Vídeos VR',
+      properties: ['openDirectory'],
+    });
+    if (result.canceled || !result.filePaths.length) return null;
+    newPath = result.filePaths[0];
+  }
 
   const { data } = getConfigFileInfo();
   const dirs = Array.isArray(data.videoDirs) ? [...data.videoDirs] : [];
@@ -672,10 +698,47 @@ ipcMain.handle('library:rescan', async () => {
 
 ipcMain.handle('library:openFolder', async (_event, folderPath) => {
   if (folderPath && fs.existsSync(folderPath)) {
-    await shell.openPath(folderPath);
-    return true;
+    try {
+      if (fs.statSync(folderPath).isDirectory()) {
+        await shell.openPath(folderPath);
+        return true;
+      }
+    } catch {}
   }
   return false;
+});
+
+// IPC Profiles & Auto-Resume
+ipcMain.handle('profiles:getAll', () => {
+  return loadProfilesJson();
+});
+
+ipcMain.handle('profiles:get', (_event, key) => {
+  if (!key) return null;
+  const all = loadProfilesJson();
+  return all[key] || null;
+});
+
+ipcMain.handle('profiles:save', (_event, { key, data }) => {
+  if (!key) return false;
+  const all = loadProfilesJson();
+  const existing = all[key] || {};
+  all[key] = {
+    ...existing,
+    ...data,
+    updatedAt: data?.updatedAt || Date.now(),
+  };
+  saveProfilesJson(all);
+  return all[key];
+});
+
+ipcMain.handle('profiles:delete', (_event, key) => {
+  if (!key) return false;
+  const all = loadProfilesJson();
+  if (!all[key]) return false;
+  delete all[key];
+  saveProfilesJson(all);
+  return true;
 });
 
 ipcMain.handle('batch:getDefaultFolder', () => {

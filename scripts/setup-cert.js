@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { getBinaryPath, setupBinaryEnv } from './bin-paths.js';
+import { getLocalIPs } from './net-utils.js';
 
 // Garante que o PATH contenha os binários embutidos
 setupBinaryEnv();
@@ -11,24 +12,6 @@ setupBinaryEnv();
 const CERTS_DIR = path.resolve('certs');
 if (!fs.existsSync(CERTS_DIR)) {
   fs.mkdirSync(CERTS_DIR, { recursive: true });
-}
-
-function getLocalIPs() {
-  const nets = os.networkInterfaces();
-  const ips = ['localhost', '127.0.0.1', 'vrplayer.local'];
-  const localHost = os.hostname();
-  if (localHost) {
-    ips.push(`${localHost.toLowerCase()}.local`);
-    ips.push(localHost);
-  }
-  for (const name of Object.keys(nets)) {
-    for (const net of nets[name]) {
-      if (net.family === 'IPv4' && !net.internal && !net.address.startsWith('169.254')) {
-        ips.push(net.address);
-      }
-    }
-  }
-  return [...new Set(ips)];
 }
 
 function findMkcert() {

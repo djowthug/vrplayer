@@ -18,6 +18,7 @@ const videoVert = /* glsl */`
 const videoFrag = /* glsl */`
   uniform sampler2D map;
   uniform int mode;          // 0 = 360, 1 = 180, 2 = olho de peixe, 3 = plano
+  uniform float curvature;   // Curvatura cilíndrica côncava (0.0 = plano normal)
   uniform vec4 eyeRect;      // xy = deslocamento, zw = escala (região do olho na textura)
   uniform float fisheyeFov;  // em radianos
   uniform float fisheyeScale;// escala/zoom do círculo (1.0 = normal)
@@ -35,7 +36,28 @@ const videoFrag = /* glsl */`
     bool inside = true;
 
     if (mode == 3) {
-      uv = vUv;
+      if (curvature > 0.001) {
+        // Projeção cilíndrica matemática côncava:
+        // Transforma a coordenada horizontal em arco angular suave (abraço periférico),
+        // eliminando a sensação de retângulo plano distante sem distorção abrupta.
+        float maxHalfArc = curvature * (75.0 * PI / 180.0) * 0.5;
+        float nx = (vUv.x - 0.5) * 2.0;
+        float theta = nx * maxHalfArc;
+        float tanHalf = tan(maxHalfArc);
+        if (tanHalf > 0.0001) {
+          float mappedX = tan(theta) / tanHalf;
+          uv.x = 0.5 + mappedX * 0.5;
+        } else {
+          uv.x = vUv.x;
+        }
+        // Curvatura periférica vertical sutil para acompanhar a geometria cilíndrica nos cantos
+        float edgeDist = nx * nx;
+        float vertCurve = 1.0 + edgeDist * curvature * 0.06;
+        uv.y = 0.5 + (vUv.y - 0.5) * vertCurve;
+        uv = clamp(uv, 0.0, 1.0);
+      } else {
+        uv = vUv;
+      }
     } else {
       vec3 d = normalize(vDir);
       if (mode == 2) {
@@ -89,6 +111,7 @@ export function createVideoMaterial(texture) {
     uniforms: {
       map: { value: texture },
       mode: { value: 0 },
+      curvature: { value: 0.0 },
       eyeRect: { value: new THREE.Vector4(0, 0, 1, 1) },
       fisheyeFov: { value: Math.PI },
       fisheyeScale: { value: 1.0 },

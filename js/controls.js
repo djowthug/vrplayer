@@ -1,12 +1,13 @@
 // Controles de visão: giroscópio, arrastar, pinça, toques e recentralizar.
 import * as THREE from 'three';
+import { clamp } from './utils/format.js';
 
 const DEG = Math.PI / 180;
+const X_AXIS = new THREE.Vector3(1, 0, 0);
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
 const Z_AXIS = new THREE.Vector3(0, 0, 1);
 // Converte o sistema do aparelho (tela para cima) para câmera olhando para frente.
 const Q_SCREEN = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5));
-const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
 export class LookControls {
   constructor(el, getFov) {
@@ -19,6 +20,7 @@ export class LookControls {
     this.yawOffset = 0;
     this.dragYaw = 0;
     this.dragPitch = 0;
+    this.pitchOffset = 0; // Radianos de inclinação vertical (assistir deitado)
 
     /** No modo óculos: sem arrastar, com toque duplo. */
     this.headsetMode = false;
@@ -33,6 +35,7 @@ export class LookControls {
     this._euler = new THREE.Euler();
     this._q0 = new THREE.Quaternion();
     this._qYaw = new THREE.Quaternion();
+    this._qPitch = new THREE.Quaternion();
     this._tmpQ = new THREE.Quaternion();
     this._fwd = new THREE.Vector3();
     this._pointers = new Map();
@@ -83,11 +86,17 @@ export class LookControls {
 
   _compose(out) {
     const yaw = this.yawOffset + this.dragYaw;
+    const pitch = (this.hasGyro ? 0 : this.dragPitch) + (this.pitchOffset || 0);
     if (this.hasGyro) {
       this._qYaw.setFromAxisAngle(Y_AXIS, yaw);
-      out.copy(this._qYaw).multiply(this.deviceQ);
+      if (Math.abs(this.pitchOffset || 0) > 0.0001) {
+        this._qPitch.setFromAxisAngle(X_AXIS, this.pitchOffset);
+        out.copy(this._qPitch).multiply(this._qYaw).multiply(this.deviceQ);
+      } else {
+        out.copy(this._qYaw).multiply(this.deviceQ);
+      }
     } else {
-      this._euler.set(this.dragPitch, yaw, 0, 'YXZ');
+      this._euler.set(pitch, yaw, 0, 'YXZ');
       out.setFromEuler(this._euler);
     }
     return out;
@@ -107,6 +116,32 @@ export class LookControls {
   }
 
   /**
+   * Define o offset de inclinação vertical (em radianos) para assistir deitado.
+   * @param {number} radians
+   */
+  setPitchOffset(radians) {
+    this.pitchOffset = clamp(radians, -75 * DEG, 80 * DEG);
+  }
+
+  /**
+   * Ajusta o offset de inclinação vertical suavemente.
+   * @param {number} deltaRad
+   */
+  adjustPitchOffset(deltaRad) {
+    this.setPitchOffset((this.pitchOffset || 0) + deltaRad);
+  }
+
+  /** Obtém o offset de inclinação vertical atual em graus inteiros. */
+  getPitchOffsetDeg() {
+    return Math.round((this.pitchOffset || 0) / DEG);
+  }
+
+  /** Reseta a inclinação para a linha do horizonte (0°). */
+  resetPitchOffset() {
+    this.pitchOffset = 0;
+  }
+
+  /**
    * Rotaciona o ângulo horizontal (yaw) suavemente (útil para analógico do controle).
    * @param {number} delta Radianos a adicionar ao yaw.
    */
@@ -115,11 +150,13 @@ export class LookControls {
   }
 
   /**
-   * Rotaciona a inclinação vertical (pitch) caso o giroscópio não esteja ativo.
+   * Rotaciona a inclinação vertical (pitch) - ajusta pitchOffset no giroscópio ou dragPitch manual.
    * @param {number} delta Radianos a adicionar ao pitch.
    */
   rotatePitch(delta) {
-    if (!this.hasGyro) {
+    if (this.hasGyro) {
+      this.adjustPitchOffset(delta);
+    } else {
       this.dragPitch = clamp(this.dragPitch + delta, -85 * DEG, 85 * DEG);
     }
   }

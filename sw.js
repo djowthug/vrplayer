@@ -1,6 +1,6 @@
 // Service worker: guarda o app em cache para abrir offline.
 // Aumente a versão sempre que publicar mudanças.
-const CACHE = 'vrplayer-v14';
+const CACHE = 'vrplayer-v15';
 const ASSETS = [
   './',
   'index.html',
@@ -14,6 +14,9 @@ const ASSETS = [
   'js/gamepad.js',
   'js/cursor.js',
   'js/detect.js',
+  'js/utils/format.js',
+  'js/ui/codecs-modal.js',
+  'js/ui/batch-modal.js',
   'js/vendor/three.module.js',
   'manifest.webmanifest',
   'icons/icon-180.png',

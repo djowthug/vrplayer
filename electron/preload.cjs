@@ -36,8 +36,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('open-file', handler);
   },
   getLibrary: () => ipcRenderer.invoke('library:getLibrary'),
-  addLibraryFolder: () => ipcRenderer.invoke('library:addFolder'),
+  addLibraryFolder: (folderPath) => ipcRenderer.invoke('library:addFolder', folderPath),
   removeLibraryFolder: (folderPath) => ipcRenderer.invoke('library:removeFolder', folderPath),
   rescanLibrary: () => ipcRenderer.invoke('library:rescan'),
   openFolderInExplorer: (folderPath) => ipcRenderer.invoke('library:openFolder', folderPath),
+  profilesGetAll: () => ipcRenderer.invoke('profiles:getAll'),
+  profilesGet: (key) => ipcRenderer.invoke('profiles:get', key),
+  profilesSave: (key, data) => ipcRenderer.invoke('profiles:save', { key, data }),
+  profilesDelete: (key) => ipcRenderer.invoke('profiles:delete', key),
 });

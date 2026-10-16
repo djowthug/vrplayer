@@ -8,10 +8,13 @@ import os from 'os';
 import { fileURLToPath } from 'url';
 import { Bonjour } from 'bonjour-service';
 import { detectFromName } from './js/detect.js';
+import { formatBytes as formatSize, formatDuration } from './js/utils/format.js';
+import { getLocalIPs } from './scripts/net-utils.js';
 import { scanFolderForVideos, optimizeSingleFile, cancelCurrentOptimization } from './scripts/batch-optimize.js';
 import { detectHardwareEncoder, handleHlsRequest, handleHlsSeekRequest, cleanupAllHlsSessions, probeMedia } from './scripts/hls-streamer.js';
 import { setupBinaryEnv } from './scripts/bin-paths.js';
 import { getThumbnailPath } from './scripts/thumbnailer.js';
+import { probeAudioMetadata } from './scripts/audio-probe.js';
 import {
   handleCloudStream,
   startCloudDownload,
@@ -27,18 +30,51 @@ import {
 // Injeta os binários embutidos de bin/ no PATH de execução do servidor
 setupBinaryEnv();
 
+// Carrega variáveis de ambiente do arquivo .env nativamente (Node.js 20.6+)
+try {
+  if (typeof process.loadEnvFile === 'function') {
+    const envPath = path.resolve('.env');
+    if (fs.existsSync(envPath)) {
+      process.loadEnvFile(envPath);
+    }
+  }
+} catch {}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const CONFIG_FILE = path.join(__dirname, 'config.json');
-const CERTS_DIR = path.join(__dirname, 'certs');
-const CERT_FILE = path.join(CERTS_DIR, 'cert.pem');
-const KEY_FILE = path.join(CERTS_DIR, 'key.pem');
-const CA_FILE = path.join(CERTS_DIR, 'rootCA.crt');
+export const PROFILES_FILE = path.join(__dirname, 'video-profiles.json');
+
+export function loadProfilesFromDisk() {
+  try {
+    if (fs.existsSync(PROFILES_FILE)) {
+      return JSON.parse(fs.readFileSync(PROFILES_FILE, 'utf8'));
+    }
+  } catch (err) {
+    console.error('Erro ao ler video-profiles.json:', err.message);
+  }
+  return {};
+}
+
+export let videoProfilesStore = loadProfilesFromDisk();
+let diskWriteTimer = null;
+
+export function saveProfilesToDiskDebounced() {
+  clearTimeout(diskWriteTimer);
+  diskWriteTimer = setTimeout(() => {
+    fs.writeFile(PROFILES_FILE, JSON.stringify(videoProfilesStore, null, 2), (err) => {
+      if (err) console.error('Erro ao salvar video-profiles.json:', err.message);
+    });
+  }, 1500);
+}
+const CERTS_DIR = process.env.CERTS_DIR ? path.resolve(process.env.CERTS_DIR) : path.join(__dirname, 'certs');
+const CERT_FILE = process.env.SSL_CERT_PATH ? path.resolve(process.env.SSL_CERT_PATH) : path.join(CERTS_DIR, 'cert.pem');
+const KEY_FILE = process.env.SSL_KEY_PATH ? path.resolve(process.env.SSL_KEY_PATH) : path.join(CERTS_DIR, 'key.pem');
+const CA_FILE = process.env.SSL_CA_PATH ? path.resolve(process.env.SSL_CA_PATH) : path.join(CERTS_DIR, 'rootCA.crt');
 
 export let config = { videoDir: './videos', httpsPort: 8443, httpPort: 8080 };
 export let VIDEO_DIRS = [];
 export let PRIMARY_VIDEO_DIR = path.resolve('./videos');
-export let VIDEO_DIR = PRIMARY_VIDEO_DIR; // Mantém compatibilidade com módulos legados
 
 export function reloadConfig() {
   let cfg = { videoDir: './videos', httpsPort: 8443, httpPort: 8080 };
@@ -47,6 +83,20 @@ export function reloadConfig() {
       cfg = { ...cfg, ...JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')) };
     } catch {}
   }
+
+  // Integração com variáveis de ambiente (.env / process.env)
+  const envHttpPort = process.env.HTTP_PORT || process.env.PORT;
+  const envHttpsPort = process.env.HTTPS_PORT;
+  const envVideoDir = process.env.VIDEO_DIR;
+  const envVideoDirs = process.env.VIDEO_DIRS;
+  const envTorboxApiKey = process.env.TORBOX_API_KEY;
+  const envGofileToken = process.env.GOFILE_TOKEN;
+
+  if (envHttpPort && !isNaN(parseInt(envHttpPort, 10))) cfg.httpPort = parseInt(envHttpPort, 10);
+  if (envHttpsPort && !isNaN(parseInt(envHttpsPort, 10))) cfg.httpsPort = parseInt(envHttpsPort, 10);
+  if (envVideoDir) cfg.videoDir = envVideoDir;
+  if (envTorboxApiKey && !cfg.torboxApiKey) cfg.torboxApiKey = envTorboxApiKey;
+  if (envGofileToken && !cfg.gofileToken) cfg.gofileToken = envGofileToken;
 
   let rawDirs = [];
   if (process.argv.slice(2).length > 0) {
@@ -62,12 +112,18 @@ export function reloadConfig() {
     rawDirs = ['./videos'];
   }
 
+  if (envVideoDirs) {
+    const parsedDirs = envVideoDirs.split(/[,;]/).map((d) => d.trim()).filter(Boolean);
+    for (const d of parsedDirs) {
+      if (!rawDirs.includes(d)) rawDirs.push(d);
+    }
+  }
+
   VIDEO_DIRS = rawDirs.map((d) => path.resolve(d));
   if (VIDEO_DIRS.length > 0 && !fs.existsSync(VIDEO_DIRS[0])) {
     try { fs.mkdirSync(VIDEO_DIRS[0], { recursive: true }); } catch {}
   }
   PRIMARY_VIDEO_DIR = VIDEO_DIRS[0] || path.resolve('./videos');
-  VIDEO_DIR = PRIMARY_VIDEO_DIR;
   config = cfg;
   return cfg;
 }
@@ -82,7 +138,9 @@ const videoPathMap = new Map();
 export function resolveVideoPath(rel) {
   if (!rel) return null;
   const decoded = decodeURIComponent(rel);
-  const safeRel = path.normalize(decoded).replace(/^(\.\.[\/\\])+/, '');
+  if (decoded.includes('..')) return null;
+
+  const safeRel = path.normalize(decoded).replace(/^[\\\/]+/, '');
 
   if (videoPathMap.has(safeRel)) return videoPathMap.get(safeRel);
   if (videoPathMap.has(rel)) return videoPathMap.get(rel);
@@ -92,18 +150,30 @@ export function resolveVideoPath(rel) {
     const base = path.basename(root);
     if (safeRel.startsWith(base + path.sep) || safeRel.startsWith(base + '/')) {
       const sub = safeRel.slice(base.length + 1);
-      const target = path.join(root, sub);
-      if (fs.existsSync(target)) return target;
+      const target = path.resolve(root, sub);
+      const relFromRoot = path.relative(root, target);
+      if (!relFromRoot.startsWith('..') && !path.isAbsolute(relFromRoot) && fs.existsSync(target)) {
+        return target;
+      }
     }
   }
 
   // Procura diretamente em cada uma das pastas configuradas
   for (const root of VIDEO_DIRS) {
-    const target = path.join(root, safeRel);
-    if (fs.existsSync(target)) return target;
+    const target = path.resolve(root, safeRel);
+    const relFromRoot = path.relative(root, target);
+    if (!relFromRoot.startsWith('..') && !path.isAbsolute(relFromRoot) && fs.existsSync(target)) {
+      return target;
+    }
   }
 
-  return path.join(PRIMARY_VIDEO_DIR, safeRel);
+  const primaryTarget = path.resolve(PRIMARY_VIDEO_DIR, safeRel);
+  const relFromPrimary = path.relative(PRIMARY_VIDEO_DIR, primaryTarget);
+  if (!relFromPrimary.startsWith('..') && !path.isAbsolute(relFromPrimary)) {
+    return primaryTarget;
+  }
+
+  return null;
 }
 
 let serverOptState = { running: false, current: 0, total: 0, currentFile: '', percent: 0, speed: '' };
@@ -133,28 +203,14 @@ const MIME_TYPES = {
 
 const VIDEO_EXTS = new Set(['.mp4', '.mov', '.m4v', '.webm', '.mkv', '.avi', '.ts']);
 
-function formatSize(bytes) {
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-  if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-  return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
-}
-
-function formatDuration(s) {
-  if (!s || !isFinite(s) || s <= 0) return '';
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const sec = Math.floor(s % 60).toString().padStart(2, '0');
-  return h ? `${h}:${m.toString().padStart(2, '0')}:${sec}` : `${m}:${sec}`;
-}
-
-async function scanVideos(dir, baseDir = dir, prefix = '') {
+async function scanVideos(dir, baseDir = dir, prefix = '', folderRoot = baseDir) {
   let results = [];
   try {
     const entries = fs.readdirSync(dir, { withFileTypes: true });
     for (const ent of entries) {
       const fullPath = path.join(dir, ent.name);
       if (ent.isDirectory()) {
-        const sub = await scanVideos(fullPath, baseDir, prefix);
+        const sub = await scanVideos(fullPath, baseDir, prefix, folderRoot);
         results = results.concat(sub);
       } else if (ent.isFile()) {
         const ext = path.extname(ent.name).toLowerCase();
@@ -165,7 +221,10 @@ async function scanVideos(dir, baseDir = dir, prefix = '') {
           const rel = prefix ? `${prefix}/${fileRel}` : fileRel;
           videoPathMap.set(rel, fullPath);
           const hint = detectFromName(ent.name);
-          const probe = await probeMedia(fullPath);
+          const [probe, audioProbe] = await Promise.all([
+            probeMedia(fullPath),
+            probeAudioMetadata(fullPath),
+          ]);
 
           const isDirect = probe && probe.isDirectCompatible;
           const streamUrl = isDirect
@@ -180,12 +239,19 @@ async function scanVideos(dir, baseDir = dir, prefix = '') {
           else if (w >= 1900 || h >= 1000) resolutionBadge = '1080p';
           else if (w > 0) resolutionBadge = `${w}p`;
 
+          const subDir = path.relative(baseDir, path.dirname(fullPath)).replace(/\\/g, '/');
+          const subfolder = (subDir && subDir !== '.') ? subDir : '';
+
           results.push({
             id: rel,
             name: ent.name,
             relPath: rel,
+            folderRoot: baseDir,
+            folderName: path.basename(baseDir),
+            subfolder,
             size: formatSize(stat.size),
             sizeBytes: stat.size,
+            mtime: stat.mtimeMs || 0,
             formatHint: hint,
             url: streamUrl,
             thumbUrl: `/api/thumbnail?path=${encodeURIComponent(rel)}`,
@@ -195,6 +261,8 @@ async function scanVideos(dir, baseDir = dir, prefix = '') {
             needsDownscale: probe?.needsDownscale || false,
             videoCodec: probe?.videoCodec || null,
             audioCodec: probe?.audioCodec || null,
+            audioSpatial: audioProbe,
+            audioSpatialType: audioProbe?.spatialType || 'none',
             width: w,
             height: h,
             duration: probe?.duration || 0,
@@ -219,28 +287,15 @@ async function scanAllVideoDirs() {
     const dir = VIDEO_DIRS[i];
     if (!fs.existsSync(dir)) continue;
     const prefix = isMulti ? path.basename(dir) : '';
-    const list = await scanVideos(dir, dir, prefix);
+    const list = await scanVideos(dir, dir, prefix, dir);
     results = results.concat(list);
   }
   return results;
 }
 
-function getLocalIPs() {
-  const nets = os.networkInterfaces();
-  const ips = [];
-  for (const name of Object.keys(nets)) {
-    for (const net of nets[name]) {
-      if (net.family === 'IPv4' && !net.internal && !net.address.startsWith('169.254')) {
-        ips.push(net.address);
-      }
-    }
-  }
-  return ips;
-}
-
 function setCorsHeaders(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, POST, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Range, Content-Type, Authorization');
   res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
 }
@@ -291,7 +346,7 @@ function handleRequest(req, res) {
     return;
   }
 
-  // 2.0.0 API: Listar ou adicionar pastas de vídeos (/api/folders)
+  // 2.0.0 API: Listar, adicionar ou remover pastas de vídeos (/api/folders)
   if (pathname === '/api/folders') {
     if (req.method === 'GET') {
       reloadConfig();
@@ -323,8 +378,45 @@ function handleRequest(req, res) {
             fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2), 'utf8');
           }
           reloadConfig();
+          const folderList = VIDEO_DIRS.map((d) => ({
+            path: d,
+            exists: fs.existsSync(d),
+          }));
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ success: true, folders: VIDEO_DIRS }));
+          res.end(JSON.stringify({ success: true, folders: folderList }));
+        } catch (e) {
+          res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ error: e.message }));
+        }
+      });
+      return;
+    }
+    if (req.method === 'DELETE') {
+      let body = '';
+      req.on('data', (chunk) => { body += chunk; });
+      req.on('end', () => {
+        try {
+          const { folder } = JSON.parse(body || '{}');
+          if (!folder || typeof folder !== 'string') {
+            res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify({ error: 'Campo folder obrigatório' }));
+            return;
+          }
+          const cfg = reloadConfig();
+          let dirs = Array.isArray(cfg.videoDirs) ? [...cfg.videoDirs] : [];
+          dirs = dirs.filter((d) => path.resolve(d) !== path.resolve(folder));
+          cfg.videoDirs = dirs;
+          if (cfg.videoDir && path.resolve(cfg.videoDir) === path.resolve(folder)) {
+            cfg.videoDir = dirs[0] || './videos';
+          }
+          fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2), 'utf8');
+          reloadConfig();
+          const folderList = VIDEO_DIRS.map((d) => ({
+            path: d,
+            exists: fs.existsSync(d),
+          }));
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ success: true, folders: folderList }));
         } catch (e) {
           res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({ error: e.message }));
@@ -377,6 +469,128 @@ function handleRequest(req, res) {
       res.end(JSON.stringify({ gpuEncoder: 'Desconhecido', isHardware: false, uptime: Math.round(process.uptime()) }));
     });
     return;
+  }
+
+  // 2.0.1b API: Informações e Metadados do Vídeo e Áudio Espacial (/api/video-info?file=... ou ?path=...)
+  if (pathname === '/api/video-info') {
+    const target = url.searchParams.get('file') || url.searchParams.get('path');
+    if (!target) {
+      res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Parâmetro file ou path obrigatório' }));
+      return;
+    }
+    const fullPath = resolveVideoPath(target);
+    if (!fullPath || !fs.existsSync(fullPath)) {
+      res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Arquivo não encontrado' }));
+      return;
+    }
+    Promise.all([
+      probeMedia(fullPath),
+      probeAudioMetadata(fullPath),
+    ]).then(([probe, audio]) => {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({
+        path: target,
+        video: {
+          codec: probe?.videoCodec || null,
+          width: probe?.width || 0,
+          height: probe?.height || 0,
+          duration: probe?.duration || 0,
+          streamType: probe?.isDirectCompatible ? 'direct' : 'hls',
+          needsDownscale: probe?.needsDownscale || false,
+        },
+        audio: audio || { spatialType: 'none', channels: 0 },
+      }));
+    }).catch((err) => {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: err.message }));
+    });
+    return;
+  }
+
+  // 2.0.1c API: Perfis de Calibração e Retomada de Reprodução (/api/profiles)
+  if (pathname === '/api/profiles') {
+    if (req.method === 'GET') {
+      const key = url.searchParams.get('key');
+      if (key) {
+        const item = videoProfilesStore[key] || null;
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify({ success: true, key, profile: item }));
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      return res.end(JSON.stringify(videoProfilesStore));
+    }
+
+    if (req.method === 'POST') {
+      let body = '';
+      req.on('data', (chunk) => { body += chunk; });
+      req.on('end', () => {
+        try {
+          const parsed = JSON.parse(body || '{}');
+
+          // Suporte a lote de perfis: { profiles: { [key]: data } }
+          if (parsed.profiles && typeof parsed.profiles === 'object') {
+            for (const [k, v] of Object.entries(parsed.profiles)) {
+              if (k && typeof v === 'object') {
+                videoProfilesStore[k] = { ...(videoProfilesStore[k] || {}), ...v };
+              }
+            }
+            saveProfilesToDiskDebounced();
+            res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+            return res.end(JSON.stringify({ ok: true, success: true }));
+          }
+
+          const { key, data } = parsed;
+          if (key && data) {
+            videoProfilesStore[key] = data;
+            saveProfilesToDiskDebounced();
+            res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+            return res.end(JSON.stringify({ ok: true, success: true }));
+          } else if (key && typeof parsed === 'object') {
+            const copy = { ...parsed };
+            delete copy.key;
+            videoProfilesStore[key] = copy;
+            saveProfilesToDiskDebounced();
+            res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+            return res.end(JSON.stringify({ ok: true, success: true }));
+          }
+
+          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ error: 'Campo key e data obrigatórios' }));
+        } catch {
+          res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ error: 'JSON inválido' }));
+        }
+      });
+      return;
+    }
+
+    if (req.method === 'DELETE') {
+      let body = '';
+      req.on('data', (chunk) => { body += chunk; });
+      req.on('end', () => {
+        try {
+          let key = url.searchParams.get('key');
+          if (!key && body) {
+            try {
+              const p = JSON.parse(body);
+              key = p.key;
+            } catch {}
+          }
+          if (key && videoProfilesStore[key]) {
+            delete videoProfilesStore[key];
+            saveProfilesToDiskDebounced();
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: true, success: true, key }));
+        } catch (e) {
+          res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ error: e.message }));
+        }
+      });
+      return;
+    }
   }
 
   // 2.0.2 API: Nuvem (Gofile, Torbox, Streaming inteligente e Download)
@@ -447,7 +661,7 @@ function handleRequest(req, res) {
           config.torboxApiKey = parsed.torboxApiKey || '';
           saveTorboxConfig(config.torboxApiKey);
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ success: true, torboxApiKey: config.torboxApiKey }));
+          res.end(JSON.stringify({ success: true, configured: !!config.torboxApiKey }));
         } catch (e) {
           res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({ error: 'JSON inválido' }));
@@ -456,7 +670,9 @@ function handleRequest(req, res) {
       return;
     } else {
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ torboxApiKey: config.torboxApiKey || '' }));
+      const rawKey = config.torboxApiKey || '';
+      const masked = rawKey.length > 8 ? `${rawKey.slice(0, 4)}••••${rawKey.slice(-4)}` : (rawKey ? '••••••••' : '');
+      res.end(JSON.stringify({ configured: !!rawKey, maskedKey: masked }));
       return;
     }
   }
@@ -664,6 +880,11 @@ function handleRequest(req, res) {
     const stat = fs.statSync(fullPath);
     const fileSize = stat.size;
     const ext = path.extname(fullPath).toLowerCase();
+    if (!VIDEO_EXTS.has(ext)) {
+      res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Acesso negado: apenas arquivos de vídeo permitidos');
+      return;
+    }
     const contentType = MIME_TYPES[ext] || 'video/mp4';
 
     const range = req.headers.range;
@@ -700,7 +921,40 @@ function handleRequest(req, res) {
   }
 
   // 4. Arquivos estáticos do site (PWA)
-  let filePath = path.join(process.cwd(), pathname === '/' ? 'index.html' : pathname);
+  const normalizedRel = path.normalize(pathname).replace(/^[\\\/]+/, '');
+  let filePath = path.resolve(process.cwd(), pathname === '/' ? 'index.html' : normalizedRel);
+  const relFromRoot = path.relative(process.cwd(), filePath);
+  const isOutsideRoot = relFromRoot.startsWith('..') || path.isAbsolute(relFromRoot);
+  const lowerRel = relFromRoot.toLowerCase().replace(/\\/g, '/');
+
+  // Bloqueio de segurança estrito: impede path traversal, bypass de caixa alta/baixa no Windows e exposição de dados sensíveis
+  const isForbidden =
+    pathname.includes('..') ||
+    normalizedRel.includes('..') ||
+    isOutsideRoot ||
+    lowerRel.startsWith('certs/') || lowerRel === 'certs' ||
+    lowerRel.startsWith('scripts/') || lowerRel === 'scripts' ||
+    lowerRel.startsWith('electron/') || lowerRel === 'electron' ||
+    lowerRel.startsWith('bin/') || lowerRel === 'bin' ||
+    lowerRel.startsWith('node_modules/') || lowerRel === 'node_modules' ||
+    lowerRel.startsWith('.git') ||
+    lowerRel.startsWith('.cache') ||
+    lowerRel === 'server.js' ||
+    lowerRel === 'package.json' ||
+    lowerRel === 'package-lock.json' ||
+    (lowerRel.startsWith('config') && lowerRel.endsWith('.json')) ||
+    lowerRel.endsWith('.env') ||
+    lowerRel.endsWith('.key') ||
+    lowerRel.endsWith('.pem') ||
+    lowerRel.endsWith('.crt') ||
+    (lowerRel.endsWith('.json') && lowerRel !== 'manifest.webmanifest');
+
+  if (isForbidden) {
+    res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Acesso proibido');
+    return;
+  }
+
   if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
     filePath = path.join(process.cwd(), 'index.html');
   }
@@ -747,24 +1001,30 @@ const localIPs = getLocalIPs();
 const primaryIP = localIPs[0] || 'localhost';
 
 // Anúncio mDNS na rede local (Zero-Config para iPhone e Mac/PC)
-try {
-  bonjour = new Bonjour();
-  bonjour.publish({
-    name: 'VR Player Server',
-    type: 'https',
-    port: config.httpsPort,
-    host: 'vrplayer.local',
-    txt: { app: 'vrplayer', ver: '1.0.0' },
-  });
-  bonjour.publish({
-    name: 'VR Player Cert',
-    type: 'http',
-    port: config.httpPort,
-    host: 'vrplayer.local',
-    txt: { app: 'vrplayer-cert', ver: '1.0.0' },
-  });
-} catch (e) {
-  console.warn('⚠️ mDNS Bonjour não iniciado:', e.message);
+const mdnsEnabled = process.env.MDNS_ENABLED !== 'false';
+const mdnsHostname = process.env.MDNS_HOSTNAME || 'vrplayer';
+const BIND_HOST = process.env.BIND_ADDRESS || process.env.HOST || '0.0.0.0';
+
+if (mdnsEnabled) {
+  try {
+    bonjour = new Bonjour();
+    bonjour.publish({
+      name: 'VR Player Server',
+      type: 'https',
+      port: config.httpsPort,
+      host: `${mdnsHostname}.local`,
+      txt: { app: 'vrplayer', ver: '1.0.0' },
+    });
+    bonjour.publish({
+      name: 'VR Player Cert',
+      type: 'http',
+      port: config.httpPort,
+      host: `${mdnsHostname}.local`,
+      txt: { app: 'vrplayer-cert', ver: '1.0.0' },
+    });
+  } catch (e) {
+    console.warn('⚠️ mDNS Bonjour não iniciado:', e.message);
+  }
 }
 
 console.log('\n======================================================');
@@ -788,9 +1048,9 @@ if (hasCert) {
     cert: fs.readFileSync(CERT_FILE),
   };
   const httpsServer = https.createServer(options, handleRequest);
-  httpsServer.listen(config.httpsPort, '0.0.0.0', () => {
+  httpsServer.listen(config.httpsPort, BIND_HOST, () => {
     console.log(`\n🔒 HTTPS ATIVO! Abra no Safari do iPhone:`);
-    console.log(`   ✨ https://vrplayer.local:${config.httpsPort}/  (Zero-Config mDNS)`);
+    console.log(`   ✨ https://${mdnsHostname}.local:${config.httpsPort}/  (Zero-Config mDNS)`);
     for (const ip of localIPs) {
       console.log(`   👉 https://${ip}:${config.httpsPort}/`);
     }
@@ -807,18 +1067,18 @@ if (hasCert) {
       res.end();
     }
   });
-  httpServer.listen(config.httpPort, '0.0.0.0', () => {
+  httpServer.listen(config.httpPort, BIND_HOST, () => {
     console.log(`\n📲 Link rápido para instalar o Certificado no iPhone (abra no Safari):`);
-    console.log(`   ✨ http://vrplayer.local:${config.httpPort}/install-cert  (Zero-Config)`);
+    console.log(`   ✨ http://${mdnsHostname}.local:${config.httpPort}/install-cert  (Zero-Config)`);
     for (const ip of localIPs) {
       console.log(`   👉 http://${ip}:${config.httpPort}/install-cert`);
     }
   });
 } else {
   const httpServer = http.createServer(handleRequest);
-  httpServer.listen(config.httpPort, '0.0.0.0', () => {
+  httpServer.listen(config.httpPort, BIND_HOST, () => {
     console.log(`\n⚠️  Modo HTTP (sem giroscópio no iPhone por falta de HTTPS).`);
-    console.log(`   Acesse: http://vrplayer.local:${config.httpPort}/ ou http://${primaryIP}:${config.httpPort}/`);
+    console.log(`   Acesse: http://${mdnsHostname}.local:${config.httpPort}/ ou http://${primaryIP}:${config.httpPort}/`);
     console.log(`\n💡 Para ativar HTTPS e liberar o giroscópio no iPhone:`);
     console.log(`   Execute no terminal: npm run cert\n`);
   });

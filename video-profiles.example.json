@@ -1,0 +1,16 @@
+{
+  "vid_example_video_1080p.mp4_0": {
+    "currentTime": 0,
+    "duration": 120,
+    "completed": false,
+    "updatedAt": 1700000000000,
+    "profile": {
+      "projection": "180",
+      "stereo": "sbs",
+      "swap": false,
+      "fisheyeFov": 180,
+      "fisheyeScale": 1.0,
+      "dominantEye": "both"
+    }
+  }
+}

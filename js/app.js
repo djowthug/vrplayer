@@ -1,10 +1,15 @@
 // VR Player — interface, carregamento de arquivos e estado.
-import * as THREE from 'three';
+import { Quaternion } from 'three';
 import { VRRenderer } from './renderer.js';
 import { LookControls } from './controls.js';
 import { analyzeFrame, guessFormat, detectFromName } from './detect.js';
 import { GamepadManager } from './gamepad.js';
 import { VirtualCursor } from './cursor.js';
+import { clamp, fmtTime, formatTime } from './utils/format.js';
+import { renderCodecsUI } from './ui/codecs-modal.js';
+import { BatchOptimizerModal } from './ui/batch-modal.js';
+import { HudLayoutEditor } from './ui/layout-editor.js';
+import { SpatialAudioEngine } from './spatial-audio.js';
 import {
   getTorboxApiKey,
   setTorboxApiKey,
@@ -22,9 +27,21 @@ import {
   removeFromCloudHistory,
   clearCloudHistory,
 } from './cloud.js';
+import {
+  generateVideoKey,
+  loadVideoProfile,
+  saveVideoProfile,
+  syncProfilesWithBackend,
+  extractProfileFromState,
+  applyProfileToState,
+  getLocalProfiles,
+} from './profiles.js';
+import { VideoProfileManager, videoProfileManager } from './utils/video-profile.js';
+import { detectVideoFormat } from './detect.js';
 
+const profileManager = videoProfileManager;
+let resumeToastTimeout = null;
 const $ = (id) => document.getElementById(id);
-const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const isElectron = !!(typeof window !== 'undefined' && window.electronAPI && window.electronAPI.isElectron);
 
@@ -40,6 +57,7 @@ const els = {
   btnPlay: $('btn-play'),
   btnMute: $('btn-mute'),
   btnHeadset: $('btn-headset'),
+  btnFullscreen: $('btn-fullscreen'),
   scrubber: $('scrubber'),
   tCur: $('t-cur'),
   tDur: $('t-dur'),
@@ -78,6 +96,7 @@ const els = {
   presets: $('presets'),
   segProjection: $('seg-projection'),
   segLayout: $('seg-layout'),
+  segDominantEye: $('seg-dominant-eye'),
   swSwap: $('sw-swap'),
   detectCaption: $('detect-caption'),
   boxFisheyeFormat: $('box-fisheye-format'),
@@ -113,11 +132,25 @@ const els = {
   pcServerBadge: $('pc-server-badge'),
   monitoredFoldersBar: $('monitored-folders-bar'),
   monitoredFoldersList: $('monitored-folders-list'),
+  btnManageFolders: $('btn-manage-folders'),
   btnAddFolder: $('btn-add-folder'),
   btnRescanFolders: $('btn-rescan-folders'),
   pcServerConnectWrap: $('pc-server-connect-wrap'),
+  pcGalleryToolbar: $('pc-gallery-toolbar'),
+  folderFilterChips: $('folder-filter-chips'),
+  gallerySortSelect: $('gallery-sort-select'),
+  btnToggleAllFolders: $('btn-toggle-all-folders'),
+  toggleAllLabel: $('toggle-all-label'),
   pcVideoList: $('pc-video-list'),
   pcServerMsg: $('pc-server-msg'),
+  sheetManageFolders: $('sheet-manage-folders'),
+  inputNewFolderPath: $('input-new-folder-path'),
+  btnBrowseFolder: $('btn-browse-folder'),
+  btnConfirmAddFolder: $('btn-confirm-add-folder'),
+  manageBrowseTip: $('manage-browse-tip'),
+  manageFoldersCount: $('manage-folders-count'),
+  manageFoldersItems: $('manage-folders-items'),
+  btnRefreshFolderList: $('btn-refresh-folder-list'),
   // Elementos da Nuvem (Torbox & Gofile)
   tabCloudLink: $('tab-cloud-link'),
   tabCloudTorbox: $('tab-cloud-torbox'),
@@ -142,6 +175,32 @@ const els = {
   sheetCloudFilesTitle: $('sheet-cloud-files-title'),
   sheetCloudFilesSub: $('sheet-cloud-files-sub'),
   cloudFilesListContainer: $('cloud-files-list-container'),
+  // Presets & Zoom
+  sheetPresets: $('sheet-presets'),
+  inputNewPresetName: $('input-new-preset-name'),
+  btnSaveNewPreset: $('btn-save-new-preset'),
+  presetsManagerList: $('presets-manager-list'),
+  btnRestoreFactoryPresets: $('btn-restore-factory-presets'),
+  btnOpenPresetsSheet: $('btn-open-presets-sheet'),
+  btnZoomIn: $('btn-zoom-in'),
+  btnZoomOut: $('btn-zoom-out'),
+  btnZoomInR: $('btn-zoom-in-r'),
+  btnZoomOutR: $('btn-zoom-out-r'),
+  btnPrev: $('btn-prev'),
+  btnPrevR: $('btn-prev-r'),
+  btnNext: $('btn-next'),
+  btnNextR: $('btn-next-r'),
+  btnBookmark: $('btn-bookmark'),
+  btnBookmarkR: $('btn-bookmark-r'),
+  sheetBookmarks: $('sheet-bookmarks'),
+  btnAddBookmark: $('btn-add-bookmark'),
+  bookmarksList: $('bookmarks-list'),
+  bookmarksEmptyMsg: $('bookmarks-empty-msg'),
+  bookmarkCurTime: $('bookmark-cur-time'),
+  gazeReticle: $('gaze-reticle'),
+  gazeReticleR: $('gaze-reticle-r'),
+  gazeProgressFill: $('gaze-progress-fill'),
+  gazeProgressFillR: $('gaze-progress-fill-r'),
 };
 const video = els.video;
 
@@ -164,8 +223,8 @@ const store = {
 
 const DEFAULT_IMAGE = { exposure: 0, brightness: 0, contrast: 1, saturation: 1, gamma: 1 };
 
-// ---------------- Presets de Headset (Calibração Óptica Avançada) ----------------
-const VR_PRESETS = {
+// ---------------- Presets de Headset e Imagem (Calibração Óptica Avançada) ----------------
+const FACTORY_VR_PRESETS = {
   cardboard: {
     name: 'Google Cardboard',
     fov: 80,
@@ -174,6 +233,7 @@ const VR_PRESETS = {
     chromatic_aberration: 0.02,
     ipd_offset: 0.0,
     sharpening: 20,
+    image: { ...DEFAULT_IMAGE },
   },
   vrbox: {
     name: 'VR Box 2.0',
@@ -183,6 +243,7 @@ const VR_PRESETS = {
     chromatic_aberration: 0.05,
     ipd_offset: 0.0,
     sharpening: 35,
+    image: { ...DEFAULT_IMAGE },
   },
   vrgpro: {
     name: 'VRG Pro (Full Screen)',
@@ -192,6 +253,7 @@ const VR_PRESETS = {
     chromatic_aberration: 0.01,
     ipd_offset: -0.02,
     sharpening: 10,
+    image: { ...DEFAULT_IMAGE },
   },
   desktop: {
     name: 'Desktop / Flat Screen',
@@ -201,9 +263,25 @@ const VR_PRESETS = {
     chromatic_aberration: 0.0,
     ipd_offset: 0.0,
     sharpening: 0,
+    image: { ...DEFAULT_IMAGE },
   },
 };
-const PRESET_ORDER = Object.keys(VR_PRESETS);
+
+function getCustomPresets() {
+  return store.get('custom_presets', {});
+}
+
+function getMergedPresets() {
+  return { ...FACTORY_VR_PRESETS, ...getCustomPresets() };
+}
+
+let VR_PRESETS = getMergedPresets();
+let PRESET_ORDER = Object.keys(VR_PRESETS);
+
+function reloadPresets() {
+  VR_PRESETS = getMergedPresets();
+  PRESET_ORDER = Object.keys(VR_PRESETS);
+}
 
 /** Converte os nomes de campo do preset para as chaves usadas no estado. */
 const presetToOptics = (p) => ({
@@ -217,12 +295,13 @@ const presetToOptics = (p) => ({
 
 /** Faixas dos parâmetros vinculados a preset, por modo (o modo Tela não tem IPD). */
 const OPTICS_RANGES = {
-  headsetSettings: { fov: [60, 120], k1: [0, 0.6], k2: [0, 0.3], ca: [0, 0.15], sharpening: [0, 100], ipd: [-0.15, 0.15] },
-  desktopView: { fov: [30, 120], k1: [0, 0.6], k2: [0, 0.3], ca: [0, 0.15], sharpening: [0, 100] },
+  headsetSettings: { fov: [45, 125], k1: [0, 0.6], k2: [0, 0.3], ca: [0, 0.15], sharpening: [0, 100], ipd: [-0.15, 0.15] },
+  desktopView: { fov: [25, 120], k1: [0, 0.6], k2: [0, 0.3], ca: [0, 0.15], sharpening: [0, 100] },
 };
 
 /** Valores de um preset já limitados às faixas do grupo (headsetSettings ou desktopView). */
 function presetValuesFor(group, presetId) {
+  reloadPresets();
   const p = VR_PRESETS[presetId];
   if (!p) return null;
   const v = presetToOptics(p);
@@ -288,11 +367,26 @@ const state = {
   desktopView: loadOptics('desktopView', DEFAULT_DESKTOP_VIEW),
   fisheye: { ...DEFAULT_FISHEYE, ...store.get('fisheye', {}) },
   cursor: { speed: store.get('cursorSpeed', 100) },
+  dominantEye: store.get('dominant_eye', 'both'),
   headset: store.get('vr_mode', false),
   environment: store.get('environment', 'cinema'),
   telemetryVisible: store.get('telemetry', false),
+  cinema: {
+    distance: (() => {
+      const v = store.get('cinema_distance', null);
+      return (v === null || v === 6.0) ? 2.8 : v;
+    })(),
+    curvature: (() => {
+      const v = store.get('cinema_curvature', null);
+      return (v === null || v === 0.0) ? 0.35 : v;
+    })(),
+    scale: store.get('cinema_scale', 1.0),
+  },
+  audioBoost: store.get('audio_boost_gain', 1.0),
+  gazeActive: store.get('gaze_active', false),
   fileName: '',
   fileKey: null,
+  videoKey: null,
   objectUrl: null,
   originalPath: null,
   userChangedFormat: false,
@@ -317,12 +411,19 @@ let vr = null;
 let look = null;
 let gamepad = null;
 let virtualCursor = null;
-const viewQ = new THREE.Quaternion();
+let layoutEditor = null;
+let spatialAudio = null;
+let currentSpatialMode = 'stereo-headtracked';
+const viewQ = new Quaternion();
 
 // ---------------- Motor 3D ----------------
 function ensureEngine() {
   if (vr) return;
   vr = new VRRenderer($('stage'), video);
+  if (!spatialAudio) {
+    spatialAudio = new SpatialAudioEngine(video);
+    vr.setSpatialAudio(spatialAudio);
+  }
   look = new LookControls($('stage'), () => vr.currentFov());
   look.onTap = handleTap;
   look.onDoubleTap = () => {
@@ -334,12 +435,7 @@ function ensureEngine() {
     hud('Visão centralizada');
   };
   look.onPinch = (ratio) => {
-    if (!state.headset) {
-      vr.viewFov = clamp(vr.viewFov / ratio, 30, 120);
-      state.desktopView.fov = vr.viewFov;
-      syncSliders();
-      saveSettings();
-    }
+    adjustZoomFromPinch(ratio);
   };
   vr.setImage(state.image);
   vr.setHeadsetSettings(state.headsetSettings);
@@ -347,6 +443,7 @@ function ensureEngine() {
   vr.setFisheyeSettings(state.fisheye);
   vr.setDesktopOptics(state.desktopView);
   vr.viewFov = state.desktopView.fov;
+  vr.setCinemaScreen(state.cinema);
 
   const onResize = () => vr && vr.resize();
   window.addEventListener('resize', onResize);
@@ -361,12 +458,25 @@ function initGamepad() {
       baseSpeed: 550,
       sensitivity: state.cursor.speed,
       hideTimeout: 3000,
-      isUiActive: () => els.player.hidden || state.controlsVisible || sheetOpen() || settingsPill?.isOpen(),
+      isUiActive: () => els.player.hidden || state.controlsVisible || sheetOpen() || settingsPill?.isOpen() || layoutEditor?.isOpen(),
     });
   }
 
   if (gamepad) return;
   gamepad = new GamepadManager({
+    isLayoutActive: () => layoutEditor?.isOpen(),
+    onLayoutOpen: () => {
+      if (els.player.hidden) return;
+      layoutEditor?.open();
+    },
+    onLayoutClose: () => layoutEditor?.close(),
+    onLayoutPrev: () => layoutEditor?.prevElement(),
+    onLayoutNext: () => layoutEditor?.nextElement(),
+    onLayoutMove: (dx, dy) => layoutEditor?.move(dx, dy),
+    onLayoutStickMove: (dx, dy) => layoutEditor?.move(dx, dy),
+    onLayoutScale: (dir) => layoutEditor?.scale(dir),
+    onLayoutReset: () => layoutEditor?.resetCurrent(),
+    onLayoutToggleLens: () => layoutEditor?.toggleLens(),
     isPillActive: () => settingsPill?.isOpen(),
     onPillClose: () => settingsPill?.close(),
     onPillReset: () => settingsPill?.resetCurrent(),
@@ -374,6 +484,10 @@ function initGamepad() {
     onPillNext: () => settingsPill?.next(),
     onPillAdjust: (dir) => settingsPill?.adjust(dir),
     onPillPresetCycle: (dir) => settingsPill?.isOpen() && cyclePreset(dir),
+    onZoom: (dir) => {
+      if (els.player.hidden) return;
+      adjustZoomByStep(dir);
+    },
     onPlayPause: () => {
       if (els.player.hidden) return;
       if (state.controlsVisible || sheetOpen() || settingsPill?.isOpen()) return;
@@ -410,6 +524,14 @@ function initGamepad() {
         setControlsVisible(!state.controlsVisible);
       }
     },
+    onNextVideo: () => {
+      if (els.player.hidden) return;
+      playNextVideo();
+    },
+    onPrevVideo: () => {
+      if (els.player.hidden) return;
+      playPrevVideo();
+    },
     onRotateYaw: (delta) => {
       if (els.player.hidden || state.controlsVisible || sheetOpen() || settingsPill?.isOpen()) return;
       look?.rotateYaw(delta);
@@ -420,8 +542,27 @@ function initGamepad() {
     },
     onVolumeChange: (delta) => {
       if (els.player.hidden || settingsPill?.isOpen()) return;
-      video.volume = clamp(video.volume + delta, 0, 1);
-      hud(`Volume ${Math.round(video.volume * 100)}%`);
+      if (delta > 0) {
+        if (video.volume < 0.98) {
+          video.volume = clamp(video.volume + delta, 0, 1);
+          hud(`Volume ${Math.round(video.volume * 100)}%`);
+        } else {
+          ensureAudioContextResumed();
+          const newBoost = clamp(getAudioGain() + 0.1, 1.0, 3.0);
+          setAudioGain(newBoost);
+          hud(newBoost <= 1.01 ? 'Volume 100%' : `Volume Boost ${Math.round(newBoost * 100)}% ⚡`);
+        }
+      } else {
+        if (getAudioGain() > 1.05) {
+          const newBoost = clamp(getAudioGain() - 0.1, 1.0, 3.0);
+          setAudioGain(newBoost);
+          hud(newBoost <= 1.01 ? 'Volume 100%' : `Volume Boost ${Math.round(newBoost * 100)}% ⚡`);
+        } else {
+          setAudioGain(1.0);
+          video.volume = clamp(video.volume + delta, 0, 1);
+          hud(`Volume ${Math.round(video.volume * 100)}%`);
+        }
+      }
     },
     onConnected: (name) => {
       hud(`🎮 ${name} conectado`, 3000);
@@ -524,7 +665,7 @@ function toggleTelemetry() {
   state.telemetryVisible = !state.telemetryVisible;
   store.set('telemetry', state.telemetryVisible);
   if (els.telemetryOverlay) els.telemetryOverlay.hidden = !state.telemetryVisible;
-  if (els.btnTelemetry) els.btnTelemetry.classList.toggle('active', state.telemetryVisible);
+  setTelemetryIcon(state.telemetryVisible);
   if (state.telemetryVisible) {
     updateTelemetryDisplay(currentFps);
     pollServerTelemetry();
@@ -544,9 +685,7 @@ function startLoop() {
   if (els.telemetryOverlay) {
     els.telemetryOverlay.hidden = !state.telemetryVisible;
   }
-  if (els.btnTelemetry) {
-    els.btnTelemetry.classList.toggle('active', state.telemetryVisible);
-  }
+  setTelemetryIcon(state.telemetryVisible);
 
   vr.renderer.setAnimationLoop((time) => {
     const now = typeof time === 'number' ? time : performance.now();
@@ -567,7 +706,9 @@ function startLoop() {
     gamepad?.update(dt);
     look.getQuaternion(viewQ);
     vr.render(viewQ, dt);
+    spatialAudio?.updateListenerFromCamera(vr.camera);
     updateTimeUI();
+    updateGazeLoop();
   });
 }
 
@@ -661,16 +802,19 @@ async function openVideoSource({
   isHls = false,
   relPath = null,
   baseUrl = '',
+  audioSpatial = null,
 }) {
   ensureEngine();
   releaseVideo();
 
   state.fileName = name;
+  state.fileSize = size || 0;
   state.originalPath = originalPath;
   state.fileKey = `fmt:${name}:${size}`;
+  state.videoKey = generateVideoKey(name, size);
   state.userChangedFormat = false;
   state.autoAnalyzePending = false;
-  els.title.textContent = name;
+  updateAllTitles(name);
 
   // Configuração e detecção de streaming HLS
   const isHlsStream = isHls || url.includes('.m3u8') || url.includes('/hls/');
@@ -774,26 +918,87 @@ async function openVideoSource({
     }).catch(() => {});
   }
 
-  const saved = store.get(state.fileKey);
-  if (saved) {
-    applyFormat(saved, 'Formato salvo para este vídeo');
+  const serverUrl = getCurrentServerUrl();
+  const currentVideoItem = { name, size, url, originalPath };
+  state.currentVideoItem = currentVideoItem;
+
+  // 1. Perfil Salvo do Usuário (Prioridade Máxima):
+  // Se saved?.profile existir, pula a análise de Canvas do detect.js e aplica imediatamente
+  const saved = profileManager.get(currentVideoItem) || (await loadVideoProfile(state.videoKey, serverUrl));
+  const hasSavedProfile = !!(saved && saved.profile && (saved.profile.projection || saved.profile.stereo || saved.profile.layout));
+
+  if (hasSavedProfile) {
+    applyProfileToState(saved, state, vr, look, spatialAudio, {
+      syncSliders,
+      renderFormatUI,
+      setDominantEye,
+      setSpatialAudioMode,
+    });
+    state.autoAnalyzePending = false;
+    if (els.detectCaption) els.detectCaption.textContent = 'Perfil salvo para este vídeo';
+    hud(`✨ Perfil customizado restaurado (${(saved.profile.projection || state.format.projection || 'Padrão').toUpperCase()})`, 2500);
   } else {
-    const first = guessFormat(name, video.videoWidth, video.videoHeight, null);
-    applyFormat({ ...first, swap: false }, captionFor(first.source));
-    if (first.source !== 'nome') {
-      const analysis = await analyzeVideo();
-      if (analysis && analysis.valid) {
-        refineFromAnalysis(analysis);
-      } else {
-        // O iOS às vezes só entrega quadros depois do play: tenta de novo ao reproduzir.
-        state.autoAnalyzePending = true;
+    // 2. Detecção Automática (detect.js): Só roda se o vídeo nunca teve o formato salvo/alterado
+    const legacySaved = store.get(state.fileKey);
+    if (legacySaved) {
+      applyFormat(legacySaved, 'Formato salvo para este vídeo');
+      state.autoAnalyzePending = false;
+    } else {
+      const first = guessFormat(name, video.videoWidth, video.videoHeight, null);
+      applyFormat({ ...first, swap: false }, captionFor(first.source));
+      if (first.source !== 'nome') {
+        const analysis = await analyzeVideo();
+        if (analysis && analysis.valid) {
+          refineFromAnalysis(analysis);
+        } else {
+          // O iOS às vezes só entrega quadros depois do play: tenta de novo ao reproduzir.
+          state.autoAnalyzePending = true;
+        }
       }
+    }
+  }
+
+  // Configuração de Áudio Espacial (se não definido no perfil)
+  if (!saved?.profile?.spatialAudio) {
+    const hint = detectFromName(name);
+    const detectedSpatial = audioSpatial?.spatialType || hint.spatialAudio || null;
+    state.audioSpatialType = detectedSpatial;
+
+    if (detectedSpatial === 'ambisonics-foa' || detectedSpatial === 'surround-5.1' || detectedSpatial === 'surround-7.1') {
+      updateSpatialAudioBadge(detectedSpatial);
+      setSpatialAudioMode(detectedSpatial, true);
+      hud('🎧 Áudio 3D Nativo Ativado', 3000);
+    } else {
+      updateSpatialAudioBadge(null);
+      const preferSpatial = store.get('prefer_spatial_audio', false);
+      setSpatialAudioMode('stereo-headtracked', preferSpatial);
     }
   }
 
   if (video.videoWidth * video.videoHeight > 6144 * 3072) {
     toast('Vídeo de resolução muito alta: pode travar no iPhone.');
   }
+
+  // Retomar reprodução do ponto onde parou (Perfil Híbrido com fallback legado)
+  const legacyProg = getSavedVideoProgress();
+  const resumeTime = (saved && typeof saved.currentTime === 'number' && saved.currentTime > 5 && !saved.completed)
+    ? saved.currentTime
+    : (legacyProg ? legacyProg.time : 0);
+
+  const d = (state.isHls && state.totalDuration > 0) ? state.totalDuration : video.duration;
+  if (resumeTime > 5 && (!isFinite(d) || resumeTime < d - 10)) {
+    if (state.isHls) {
+      seekHls(resumeTime);
+    } else {
+      try { video.currentTime = resumeTime; } catch {}
+    }
+    lastShownSecond = -1;
+    updateTimeUI(true);
+    hud(`Retomando de ${fmtTime(resumeTime)}`, 2500);
+    toast(`Continuando reprodução de ${fmtTime(resumeTime)}`);
+    showResumeBanner(video, currentVideoItem, resumeTime);
+  }
+
   setControlsVisible(true);
 }
 
@@ -856,6 +1061,7 @@ function userSetFormat(partial) {
   if (state.fileKey) {
     store.set(state.fileKey, { ...state.format, fisheye: state.fisheye });
   }
+  saveCurrentVideoProfile(true);
 }
 
 function renderFormatUI() {
@@ -867,7 +1073,7 @@ function renderFormatUI() {
     chip.classList.toggle('active', p.projection === f.projection && p.layout === f.layout);
   });
   els.swSwap.checked = f.swap;
-  els.formatChip.textContent = formatLabel(f);
+  updateAllFormatChips(formatLabel(f));
 
   if (els.boxFisheyeFormat) {
     els.boxFisheyeFormat.hidden = (f.projection !== 'fisheye');
@@ -894,6 +1100,46 @@ els.segLayout.addEventListener('click', (e) => {
   if (b) userSetFormat({ layout: b.dataset.value });
 });
 els.swSwap.addEventListener('change', () => userSetFormat({ swap: els.swSwap.checked }));
+
+// ---------------- Olho Dominante (Modo Óculos) ----------------
+function setDominantEye(eye, notify = false) {
+  state.dominantEye = eye;
+  store.set('dominant_eye', eye);
+
+  els.player?.classList.toggle('dominant-left', eye === 'left');
+  els.player?.classList.toggle('dominant-right', eye === 'right');
+  els.player?.classList.toggle('dominant-both', eye === 'both');
+
+  document.body.classList.toggle('dominant-left', eye === 'left');
+  document.body.classList.toggle('dominant-right', eye === 'right');
+  document.body.classList.toggle('dominant-both', eye === 'both');
+
+  if (els.segDominantEye) {
+    els.segDominantEye.querySelectorAll('button').forEach((b) => {
+      b.classList.toggle('active', b.dataset.value === eye);
+    });
+  }
+
+  if (state.headset && els.sheetFormat?.classList.contains('show')) {
+    syncFormatStereo();
+  }
+
+  if (settingsPill?.isOpen()) {
+    settingsPill.render(true);
+  }
+
+  if (notify) {
+    const label = eye === 'right' ? 'Direito' : eye === 'left' ? 'Esquerdo' : 'Ambos';
+    hud(`👁️ Olho Dominante: ${label}`);
+  }
+}
+
+els.segDominantEye?.addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (b && b.dataset.value) {
+    setDominantEye(b.dataset.value, true);
+  }
+});
 
 // ---------------- Ajustes ----------------
 function setRangeFill(input) {
@@ -999,6 +1245,7 @@ function applySettings() {
   if (!vr) return;
   vr.setImage(state.image);
   vr.setHeadsetSettings(state.headsetSettings);
+  layoutEditor?.refreshLens();
   vr.setEnvironment(state.environment);
   vr.setFisheyeSettings(state.fisheye);
   vr.setDesktopOptics(state.desktopView);
@@ -1017,6 +1264,7 @@ function saveSettings() {
   if (state.fileKey && state.format.projection === 'fisheye') {
     store.set(state.fileKey, { ...state.format, fisheye: state.fisheye });
   }
+  saveCurrentVideoProfile(false);
 }
 
 function setEnvironment(envId) {
@@ -1083,12 +1331,545 @@ $('btn-reset').addEventListener('click', () => {
   toast('Ajustes restaurados');
 });
 
-// ---------------- Lógica Dinâmica de Presets de Headset ----------------
+// ---------------- Lógica de Zoom e Enquadramento ----------------
+function calcZoomPercent(fov, baseFov = 75) {
+  if (!fov || fov <= 0) return 100;
+  return Math.round((baseFov / fov) * 100);
+}
+
+function adjustZoom(deltaDeg, showHud = true) {
+  const isHeadset = !!state.headset;
+  const group = isHeadset ? 'headsetSettings' : 'desktopView';
+  const minFov = isHeadset ? 45 : 25;
+  const maxFov = isHeadset ? 125 : 120;
+  const baseFov = isHeadset ? 82 : 75;
+
+  const curFov = state[group].fov || baseFov;
+  const nextFov = clamp(curFov + deltaDeg, minFov, maxFov);
+  state[group].fov = Number(nextFov.toFixed(1));
+
+  if (isHeadset) {
+    vr?.setHeadsetSettings(state.headsetSettings);
+  } else {
+    if (vr) vr.viewFov = nextFov;
+  }
+
+  syncSliders();
+  saveSettings();
+  if (settingsPill?.isOpen()) {
+    settingsPill.render(true);
+  }
+
+  if (showHud) {
+    const pct = calcZoomPercent(nextFov, baseFov);
+    hud(`Zoom: ${pct}% (${Math.round(nextFov)}°)`, 800);
+  }
+}
+
+function adjustZoomByStep(dir) {
+  // dir > 0: zoom in -> diminui FOV em 4 graus
+  // dir < 0: zoom out -> aumenta FOV em 4 graus
+  adjustZoom(dir > 0 ? -4 : 4, true);
+}
+
+function adjustZoomFromPinch(ratio) {
+  if (ratio <= 0) return;
+  const isHeadset = !!state.headset;
+  const group = isHeadset ? 'headsetSettings' : 'desktopView';
+  const minFov = isHeadset ? 45 : 25;
+  const maxFov = isHeadset ? 125 : 120;
+  const baseFov = isHeadset ? 82 : 75;
+
+  const curFov = state[group].fov || baseFov;
+  const nextFov = clamp(curFov / ratio, minFov, maxFov);
+  if (Math.abs(nextFov - curFov) > 0.1) {
+    state[group].fov = Number(nextFov.toFixed(1));
+    if (isHeadset) {
+      vr?.setHeadsetSettings(state.headsetSettings);
+    } else {
+      if (vr) vr.viewFov = nextFov;
+    }
+    syncSliders();
+    saveSettings();
+    if (settingsPill?.isOpen()) {
+      settingsPill.render(true);
+    }
+    const pct = calcZoomPercent(nextFov, baseFov);
+    hud(`Zoom: ${pct}% (${Math.round(nextFov)}°)`, 600);
+  }
+}
+
+// ---------------- Registro de Posição do Vídeo (Retomar reprodução) ----------------
+function getProgressStorageKey() {
+  if (!state.fileName) return null;
+  return `prog:${state.fileName}:${state.fileSize || 0}`;
+}
+
+function saveVideoProgress(t, d, immediate = false) {
+  const key = getProgressStorageKey();
+  if (!isFinite(t) || !isFinite(d) || d <= 0) return;
+  const isEnd = t >= d - 10 || (t / d) > 0.92;
+  if (key) {
+    if (isEnd) {
+      store.set(key, { time: Math.floor(t), duration: Math.floor(d), completed: true, updatedAt: Date.now() });
+    } else if (t > 4) {
+      store.set(key, { time: Math.floor(t), duration: Math.floor(d), completed: false, updatedAt: Date.now() });
+    }
+  }
+  if (state.currentVideoItem) {
+    profileManager.saveProgress(state.currentVideoItem, t, d, immediate);
+  }
+  if (state.videoKey) {
+    const prof = extractProfileFromState(state, look, vr, spatialAudio);
+    saveVideoProfile({
+      key: state.videoKey,
+      currentTime: Math.floor(t),
+      duration: Math.floor(d),
+      completed: isEnd,
+      profile: prof,
+      serverUrl: getCurrentServerUrl(),
+      immediate,
+    });
+  }
+}
+
+function saveCurrentVideoProfile(immediate = false) {
+  if (!state.videoKey) return;
+  const d = (state.isHls && state.totalDuration > 0) ? state.totalDuration : video.duration;
+  const t = (state.isHls ? state.hlsOffset : 0) + (video.currentTime || 0);
+  const isEnd = (isFinite(d) && d > 0 && isFinite(t)) ? (t >= d - 10 || (t / d) > 0.92) : false;
+  const prof = extractProfileFromState(state, look, vr, spatialAudio);
+
+  if (state.currentVideoItem) {
+    profileManager.saveProfileSettings(state.currentVideoItem, prof);
+    if (isFinite(d) && d > 0 && isFinite(t)) {
+      profileManager.saveProgress(state.currentVideoItem, t, d, immediate);
+    }
+  }
+
+  saveVideoProfile({
+    key: state.videoKey,
+    currentTime: isFinite(t) && t > 0 ? Math.floor(t) : 0,
+    duration: isFinite(d) && d > 0 ? Math.floor(d) : 0,
+    completed: isEnd,
+    profile: prof,
+    serverUrl: getCurrentServerUrl(),
+    immediate,
+  });
+}
+
+function clearVideoProgress() {
+  const key = getProgressStorageKey();
+  if (key) {
+    try { localStorage.removeItem('vrp:' + key); } catch {}
+  }
+  if (state.videoKey) {
+    const d = (state.isHls && state.totalDuration > 0) ? state.totalDuration : video.duration;
+    saveVideoProgress(0, d || 0, true);
+  }
+}
+
+function getSavedVideoProgress() {
+  if (state.videoKey) {
+    const local = getLocalProfiles();
+    const prof = local[state.videoKey];
+    if (prof && !prof.completed && typeof prof.currentTime === 'number' && prof.currentTime > 4) {
+      return { time: prof.currentTime, duration: prof.duration || 0, completed: false };
+    }
+  }
+  const key = getProgressStorageKey();
+  if (!key) return null;
+  const p = store.get(key, null);
+  if (p && !p.completed && typeof p.time === 'number' && p.time > 4) return p;
+  return null;
+}
+
+/**
+ * Gera o HTML complementar de progresso e perfil para inserir dentro de `.video-card-thumb-wrapper`
+ */
+function renderCardProgressOverlay(videoItem) {
+  const saved = profileManager.get(videoItem);
+  if (!saved) return '';
+
+  let html = '';
+
+  // 1. Se tiver perfil de projeção/imagem salvo pelo usuário, mostra o selo no topo
+  if (saved.profile) {
+    const proj = (saved.profile.projection || '').toUpperCase();
+    const stereo = saved.profile.stereo && saved.profile.stereo !== '2d'
+      ? ` ${saved.profile.stereo.toUpperCase()}`
+      : '';
+    const label = `${proj}${stereo}`.trim() || 'CALIBRADO';
+    html += `<span class="video-card-profile-badge" title="Perfil de imagem salvo">⚙ ${label}</span>`;
+  }
+
+  // 2. Se foi concluído (>97%), exibe badge de assistido
+  if (saved.completed) {
+    html += `
+      <span class="video-card-resume-badge is-completed">✓ Assistido</span>
+      <div class="video-card-progress-track">
+        <div class="video-card-progress-fill" style="width: 100%"></div>
+      </div>
+    `;
+  } else if (saved.currentTime > 5 && saved.duration > 0) {
+    // 3. Se estiver em andamento, calcula a porcentagem e mostra o minuto exato
+    const percent = Math.min(99, Math.max(2, Math.round((saved.currentTime / saved.duration) * 100)));
+    html += `
+      <span class="video-card-resume-badge">▶ ${formatTime(saved.currentTime)}</span>
+      <div class="video-card-progress-track">
+        <div class="video-card-progress-fill" style="width: ${percent}%"></div>
+      </div>
+    `;
+  }
+
+  return html;
+}
+
+/**
+ * Exibe o Toast de retomada (compatível com cursor virtual estéreo e Gamepad)
+ */
+function showResumeBanner(videoElement, videoItem, savedSeconds) {
+  // Remove toast anterior se existir
+  document.querySelectorAll('.vr-resume-toast').forEach(el => el.remove());
+  clearTimeout(resumeToastTimeout);
+
+  // Se o modo Split-Screen estiver ativo, injeta nos 2 olhos (.hud-eye) ou no container principal
+  const hudTargets = document.querySelectorAll('.hud-eye').length > 0
+    ? document.querySelectorAll('.hud-eye')
+    : [document.getElementById('player-container') || document.getElementById('player') || document.body];
+
+  hudTargets.forEach((container) => {
+    const toast = document.createElement('div');
+    toast.className = 'vr-resume-toast visible';
+    toast.innerHTML = `
+      <span>Retomado em <strong>${formatTime(savedSeconds)}</strong></span>
+      <button type="button" class="vr-resume-toast-btn" data-action="restart-video">
+        ↺ Do início
+      </button>
+    `;
+
+    const btn = toast.querySelector('[data-action="restart-video"]');
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      videoElement.currentTime = 0;
+      if (state.isHls) {
+        try { seekHls(0); } catch {}
+      }
+      profileManager.saveProgress(videoItem, 0, videoElement.duration || (state.isHls ? state.totalDuration : 0), true);
+      document.querySelectorAll('.vr-resume-toast').forEach(el => el.remove());
+    });
+
+    container.appendChild(toast);
+  });
+
+  // Auto-oculta após 6 segundos
+  resumeToastTimeout = setTimeout(() => {
+    document.querySelectorAll('.vr-resume-toast').forEach(el => {
+      el.classList.remove('visible');
+      setTimeout(() => el.remove(), 300);
+    });
+  }, 6000);
+}
+
+function updateGalleryCardProgress(videoItem) {
+  if (!videoItem) return;
+  const key = profileManager.getVideoKey(videoItem);
+  const cards = document.querySelectorAll(`.video-card[data-video-item-key="${key}"]`);
+  cards.forEach((card) => {
+    const slot = card.querySelector('.video-card-progress-slot');
+    if (slot) {
+      slot.innerHTML = renderCardProgressOverlay(videoItem);
+    }
+  });
+}
+
+// ---------------- Amplificador de Áudio (Web Audio API Gain Booster) ----------------
+let audioCtx = null;
+let audioSource = null;
+let audioGainNode = null;
+let audioCompressorNode = null;
+let audioBoostFactor = store.get('audio_boost_gain', 1.0);
+
+function initAudioBooster() {
+  if (audioCtx) return;
+  try {
+    if (video._webaudioCtx && video._webaudioSource) {
+      audioCtx = video._webaudioCtx;
+      audioSource = video._webaudioSource;
+    } else {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) return;
+      audioCtx = new AudioContextClass();
+      audioSource = audioCtx.createMediaElementSource(video);
+      video._webaudioCtx = audioCtx;
+      video._webaudioSource = audioSource;
+    }
+    audioGainNode = audioCtx.createGain();
+    audioGainNode.gain.setValueAtTime(audioBoostFactor, audioCtx.currentTime);
+
+    audioCompressorNode = audioCtx.createDynamicsCompressor();
+    audioCompressorNode.threshold.setValueAtTime(-6, audioCtx.currentTime);
+    audioCompressorNode.knee.setValueAtTime(20, audioCtx.currentTime);
+    audioCompressorNode.ratio.setValueAtTime(8, audioCtx.currentTime);
+    audioCompressorNode.attack.setValueAtTime(0.003, audioCtx.currentTime);
+    audioCompressorNode.release.setValueAtTime(0.25, audioCtx.currentTime);
+
+    audioSource.connect(audioGainNode);
+    audioGainNode.connect(audioCompressorNode);
+    audioCompressorNode.connect(audioCtx.destination);
+  } catch (err) {
+    // Pode falhar se mídia ainda não foi ativada por gesto ou já conectada
+  }
+}
+
+function ensureAudioContextResumed() {
+  if (!audioCtx) initAudioBooster();
+  if (audioCtx && audioCtx.state === 'suspended') {
+    audioCtx.resume().catch(() => {});
+  }
+}
+
+function getAudioGain() {
+  return audioBoostFactor || 1.0;
+}
+
+function setAudioGain(factor) {
+  audioBoostFactor = clamp(Number(factor.toFixed(2)), 1.0, 3.0);
+  store.set('audio_boost_gain', audioBoostFactor);
+  if (!audioCtx) initAudioBooster();
+  if (audioGainNode && audioCtx) {
+    ensureAudioContextResumed();
+    audioGainNode.gain.setValueAtTime(audioBoostFactor, audioCtx.currentTime);
+  }
+}
+
+// ---------------- Navegação de Vídeos (Próximo / Anterior) ----------------
+let currentPlaylist = [];
+
+function playNextVideo() {
+  const list = (currentPlaylist && currentPlaylist.length > 0) ? currentPlaylist : cachedPcVideos;
+  if (!list || list.length === 0) {
+    hud('Nenhum outro vídeo na biblioteca');
+    return;
+  }
+  const currIdx = list.findIndex(v => v.name === state.fileName);
+  const nextIdx = currIdx >= 0 ? (currIdx + 1) % list.length : 0;
+  const next = list[nextIdx];
+  if (!next) return;
+  hud(`Próximo: ${next.name}`);
+  const baseUrl = cachedBaseUrl || getCurrentServerUrl() || '';
+  const isHls = next.streamType === 'hls' || next.url?.includes('.m3u8');
+  openVideoSource({
+    url: `${baseUrl}${next.url}`,
+    name: next.name,
+    size: next.sizeBytes,
+    isBlob: false,
+    duration: next.duration || 0,
+    isHls,
+    relPath: next.relPath,
+    baseUrl,
+  });
+}
+
+function playPrevVideo() {
+  const list = (currentPlaylist && currentPlaylist.length > 0) ? currentPlaylist : cachedPcVideos;
+  if (!list || list.length === 0) {
+    hud('Nenhum outro vídeo na biblioteca');
+    return;
+  }
+  const currIdx = list.findIndex(v => v.name === state.fileName);
+  const prevIdx = currIdx <= 0 ? list.length - 1 : currIdx - 1;
+  const prev = list[prevIdx];
+  if (!prev) return;
+  hud(`Anterior: ${prev.name}`);
+  const baseUrl = cachedBaseUrl || getCurrentServerUrl() || '';
+  const isHls = prev.streamType === 'hls' || prev.url?.includes('.m3u8');
+  openVideoSource({
+    url: `${baseUrl}${prev.url}`,
+    name: prev.name,
+    size: prev.sizeBytes,
+    isBlob: false,
+    duration: prev.duration || 0,
+    isHls,
+    relPath: prev.relPath,
+    baseUrl,
+  });
+}
+
+// ---------------- Marcadores de Cenas Favoritas (Bookmarks) ----------------
+function getBookmarksStorageKey() {
+  if (!state.fileName) return null;
+  return `bkm:${state.fileName}:${state.fileSize || 0}`;
+}
+
+function getBookmarks() {
+  const key = getBookmarksStorageKey();
+  if (!key) return [];
+  return store.get(key, []);
+}
+
+function saveBookmarks(list) {
+  const key = getBookmarksStorageKey();
+  if (!key) return;
+  store.set(key, list);
+}
+
+function addCurrentBookmark() {
+  const t = (state.isHls ? state.hlsOffset : 0) + (video.currentTime || 0);
+  if (!isFinite(t) || t < 0) return;
+  const list = getBookmarks();
+  const label = `Marcador ${list.length + 1}`;
+  list.push({ time: Math.floor(t), label, date: Date.now() });
+  list.sort((a, b) => a.time - b.time);
+  saveBookmarks(list);
+  hud(`Marcador salvo em ${fmtTime(t)} ⭐`);
+  renderBookmarksList();
+}
+
+function deleteBookmark(idx) {
+  const list = getBookmarks();
+  if (idx >= 0 && idx < list.length) {
+    list.splice(idx, 1);
+    saveBookmarks(list);
+    renderBookmarksList();
+  }
+}
+
+function jumpToBookmark(time) {
+  seekTo(time);
+  hud(`Marcador: ${fmtTime(time)}`);
+  closeSheets();
+}
+
+function renderBookmarksList() {
+  const listEl = els.bookmarksList;
+  const emptyEl = els.bookmarksEmptyMsg;
+  const curTimeEl = els.bookmarkCurTime;
+  if (!listEl) return;
+  const t = (state.isHls ? state.hlsOffset : 0) + (video.currentTime || 0);
+  if (curTimeEl) curTimeEl.textContent = fmtTime(t);
+
+  const list = getBookmarks();
+  if (!list || list.length === 0) {
+    listEl.innerHTML = '';
+    if (emptyEl) emptyEl.style.display = 'block';
+    return;
+  }
+  if (emptyEl) emptyEl.style.display = 'none';
+  listEl.innerHTML = '';
+
+  list.forEach((b, idx) => {
+    const item = document.createElement('div');
+    item.className = 'bookmark-item';
+    item.innerHTML = `
+      <div class="bookmark-info">
+        <span class="bookmark-time-badge">${fmtTime(b.time)}</span>
+        <span class="bookmark-label" title="${b.label}">${b.label}</span>
+      </div>
+      <div class="bookmark-actions">
+        <button class="bookmark-btn-jump">Ir ➔</button>
+        <button class="bookmark-btn-del" title="Excluir marcador">✕</button>
+      </div>
+    `;
+    item.querySelector('.bookmark-info').addEventListener('click', () => jumpToBookmark(b.time));
+    item.querySelector('.bookmark-btn-jump').addEventListener('click', () => jumpToBookmark(b.time));
+    item.querySelector('.bookmark-btn-del').addEventListener('click', (e) => {
+      e.stopPropagation();
+      deleteBookmark(idx);
+    });
+    listEl.appendChild(item);
+  });
+}
+
+function openBookmarksSheet() {
+  renderBookmarksList();
+  openSheet(els.sheetBookmarks);
+}
+
+// ---------------- Retícula de Seleção por Olhar (Gaze Dwell Selection) ----------------
+let gazeHoverTarget = null;
+let gazeHoverStartTime = 0;
+const GAZE_DWELL_MS = 1400; // 1.4s para confirmar clique
+
+function setGazeActive(active) {
+  state.gazeActive = !!active;
+  store.set('gaze_active', state.gazeActive);
+  updateGazeVisibility();
+  hud(state.gazeActive ? 'Seleção por Olhar: Ativada' : 'Seleção por Olhar: Desativada');
+}
+
+function updateGazeVisibility() {
+  const shouldShow = state.headset && state.gazeActive && !els.player.hidden;
+  if (els.gazeReticle) {
+    if (shouldShow) els.gazeReticle.classList.remove('hidden');
+    else els.gazeReticle.classList.add('hidden');
+  }
+  if (els.gazeReticleR) {
+    if (shouldShow) els.gazeReticleR.classList.remove('hidden');
+    else els.gazeReticleR.classList.add('hidden');
+  }
+}
+
+function updateGazeLoop() {
+  if (state.headset && state.gazeActive && !els.player.hidden) {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    const leftX = w * 0.25;
+    const rightX = w * 0.75;
+    const centerY = h * 0.5;
+
+    if (els.gazeReticle) {
+      els.gazeReticle.style.left = `${Math.round(leftX)}px`;
+      els.gazeReticle.style.top = `${Math.round(centerY)}px`;
+    }
+    if (els.gazeReticleR) {
+      els.gazeReticleR.style.left = `${Math.round(rightX)}px`;
+      els.gazeReticleR.style.top = `${Math.round(centerY)}px`;
+    }
+
+    const elUnder = document.elementFromPoint(leftX, centerY);
+    const target = elUnder ? elUnder.closest('button, a, .pill-btn, .video-card, .btn-preset-action, .bookmark-item') : null;
+
+    if (target && target !== els.gazeReticle && target !== els.gazeReticleR) {
+      if (gazeHoverTarget === target) {
+        const elapsed = performance.now() - gazeHoverStartTime;
+        const pct = Math.min(1, elapsed / GAZE_DWELL_MS);
+        const dashoffset = 88 * (1 - pct);
+        if (els.gazeProgressFill) els.gazeProgressFill.style.strokeDashoffset = String(dashoffset);
+        if (els.gazeProgressFillR) els.gazeProgressFillR.style.strokeDashoffset = String(dashoffset);
+
+        if (pct >= 1) {
+          target.click();
+          if (navigator.vibrate) navigator.vibrate(40);
+          gazeHoverStartTime = performance.now() + 600;
+          if (els.gazeProgressFill) els.gazeProgressFill.style.strokeDashoffset = '88';
+          if (els.gazeProgressFillR) els.gazeProgressFillR.style.strokeDashoffset = '88';
+        }
+      } else {
+        gazeHoverTarget = target;
+        gazeHoverStartTime = performance.now();
+        if (els.gazeReticle) els.gazeReticle.classList.add('active');
+        if (els.gazeReticleR) els.gazeReticleR.classList.add('active');
+      }
+    } else {
+      gazeHoverTarget = null;
+      if (els.gazeProgressFill) els.gazeProgressFill.style.strokeDashoffset = '88';
+      if (els.gazeProgressFillR) els.gazeProgressFillR.style.strokeDashoffset = '88';
+      if (els.gazeReticle) els.gazeReticle.classList.remove('active');
+      if (els.gazeReticleR) els.gazeReticleR.classList.remove('active');
+    }
+  } else {
+    gazeHoverTarget = null;
+  }
+}
+
+// ---------------- Lógica Dinâmica de Presets de Headset e Imagem ----------------
 function activeOpticsGroup() {
   return state.headset ? 'headsetSettings' : 'desktopView';
 }
 
 function presetMatches(group) {
+  reloadPresets();
   const g = state[group];
   const baseId = g.basePreset;
   const p = VR_PRESETS[baseId];
@@ -1098,10 +1879,16 @@ function presetMatches(group) {
   for (const k of Object.keys(target)) {
     if (Math.abs((g[k] ?? 0) - target[k]) > 0.001) return false;
   }
+  if (p.image) {
+    for (const k of Object.keys(p.image)) {
+      if (Math.abs((state.image[k] ?? 0) - p.image[k]) > 0.001) return false;
+    }
+  }
   return true;
 }
 
 function currentPresetLabel(group = activeOpticsGroup()) {
+  reloadPresets();
   const g = state[group];
   if (presetMatches(group)) {
     return VR_PRESETS[g.basePreset]?.name || 'Personalizado';
@@ -1110,6 +1897,7 @@ function currentPresetLabel(group = activeOpticsGroup()) {
 }
 
 function applyPreset(presetId) {
+  reloadPresets();
   const group = activeOpticsGroup();
   const vals = presetValuesFor(group, presetId);
   if (!vals) return;
@@ -1118,21 +1906,160 @@ function applyPreset(presetId) {
   if (!state.headset) {
     vr.viewFov = state.desktopView.fov;
   }
+  const p = VR_PRESETS[presetId];
+  if (p?.image) {
+    state.image = { ...DEFAULT_IMAGE, ...p.image };
+    store.set('image', state.image);
+    vr?.setImage(state.image);
+  }
   applySettings();
   saveSettings();
   syncSliders();
   settingsPill.render(true);
   settingsPill.flashPreset();
-  toast(`Preset: ${VR_PRESETS[presetId].name}`);
+  renderPresetsManagerSheet();
+  toast(`Preset: ${VR_PRESETS[presetId]?.name || 'Personalizado'}`);
 }
 
 function cyclePreset(dir = 1) {
+  reloadPresets();
   const group = activeOpticsGroup();
   const currentId = state[group].basePreset || (state.headset ? 'vrbox' : 'desktop');
   let idx = PRESET_ORDER.indexOf(currentId);
   if (idx < 0) idx = 0;
   const nextIdx = (idx + dir + PRESET_ORDER.length) % PRESET_ORDER.length;
   applyPreset(PRESET_ORDER[nextIdx]);
+}
+
+function saveCurrentAsPreset(name, overwriteId = null) {
+  const custom = getCustomPresets();
+  const group = activeOpticsGroup();
+  const g = state[group];
+
+  let id = overwriteId;
+  if (!id) {
+    id = 'custom_' + Date.now();
+  }
+
+  const presetData = {
+    name: (name && name.trim()) ? name.trim() : (custom[id]?.name || 'Meu Preset'),
+    fov: g.fov,
+    k1_distortion: g.k1 ?? 0,
+    k2_distortion: g.k2 ?? 0,
+    chromatic_aberration: g.ca ?? 0,
+    ipd_offset: g.ipd ?? 0,
+    sharpening: g.sharpening ?? 0,
+    image: { ...state.image },
+    custom: true,
+    updatedAt: Date.now(),
+  };
+
+  custom[id] = presetData;
+  store.set('custom_presets', custom);
+  reloadPresets();
+  state[group].basePreset = id;
+  saveSettings();
+  settingsPill.renderPresetUI();
+  settingsPill.flashPreset();
+  renderPresetsManagerSheet();
+  toast(`Preset "${presetData.name}" salvo com sucesso!`);
+}
+
+function deleteCustomPreset(id) {
+  const custom = getCustomPresets();
+  if (!custom[id]) return false;
+  const name = custom[id].name;
+  delete custom[id];
+  store.set('custom_presets', custom);
+  reloadPresets();
+
+  const group = activeOpticsGroup();
+  if (state[group].basePreset === id) {
+    applyPreset(state.headset ? 'vrbox' : 'desktop');
+  } else {
+    settingsPill.renderPresetUI();
+  }
+  renderPresetsManagerSheet();
+  toast(`Preset "${name}" excluído.`);
+  return true;
+}
+
+function restoreFactoryPresets() {
+  store.set('custom_presets', {});
+  reloadPresets();
+  applyPreset(state.headset ? 'vrbox' : 'desktop');
+  renderPresetsManagerSheet();
+  toast('Presets restaurados para os padrões originais.');
+}
+
+function handleQuickSavePreset() {
+  reloadPresets();
+  const group = activeOpticsGroup();
+  const currentId = state[group].basePreset;
+  const currentPreset = VR_PRESETS[currentId];
+  if (currentPreset?.custom) {
+    saveCurrentAsPreset(currentPreset.name, currentId);
+  } else {
+    const defaultName = `${currentPreset?.name || 'Ajuste'} (Personalizado)`;
+    const name = window.prompt('Salvar ajustes atuais como novo preset:', defaultName);
+    if (name) {
+      saveCurrentAsPreset(name);
+    }
+  }
+}
+
+function renderPresetsManagerSheet() {
+  const listEl = els.presetsManagerList;
+  if (!listEl) return;
+  reloadPresets();
+  const group = activeOpticsGroup();
+  const currentActiveId = state[group].basePreset;
+  const allPresets = getMergedPresets();
+
+  listEl.innerHTML = '';
+  Object.keys(allPresets).forEach((id) => {
+    const p = allPresets[id];
+    const isCurrent = currentActiveId === id;
+    const isCustom = !!p.custom;
+
+    const row = document.createElement('div');
+    row.className = `preset-manager-item ${isCurrent ? 'active' : ''}`;
+
+    const opticsSummary = `FOV ${Math.round(p.fov)}° · K1 ${p.k1_distortion?.toFixed(2) || '0.00'} · Nitidez ${Math.round(p.sharpening || 0)}%`;
+
+    row.innerHTML = `
+      <div class="preset-meta-col">
+        <div class="preset-meta-title">
+          <span>${p.name}</span>
+          ${isCustom ? '<span class="pill-preset-badge">Personalizado</span>' : '<span style="font-size:10px;color:var(--text-dim);font-weight:600;text-transform:uppercase;">Padrão</span>'}
+          ${isCurrent ? '<span style="font-size:11px;color:var(--accent);font-weight:700;">(Ativo)</span>' : ''}
+        </div>
+        <div class="preset-meta-sub">${opticsSummary}</div>
+      </div>
+      <div class="preset-actions-row">
+        <button class="btn-preset-action ${isCurrent ? '' : 'btn-preset-apply'} btn-act-apply" data-id="${id}">
+          ${isCurrent ? 'Reaplicar' : 'Usar'}
+        </button>
+        ${isCustom ? `<button class="btn-preset-action btn-act-update" data-id="${id}" title="Atualizar com ajustes da tela">Atualizar</button>` : ''}
+        ${isCustom ? `<button class="btn-preset-action btn-preset-del btn-act-del" data-id="${id}" title="Excluir preset">✕</button>` : ''}
+      </div>
+    `;
+
+    row.querySelector('.btn-act-apply')?.addEventListener('click', () => {
+      applyPreset(id);
+      renderPresetsManagerSheet();
+    });
+
+    row.querySelector('.btn-act-update')?.addEventListener('click', () => {
+      saveCurrentAsPreset(p.name, id);
+    });
+
+    row.querySelector('.btn-act-del')?.addEventListener('click', () => {
+      deleteCustomPreset(id);
+    });
+
+    listEl.appendChild(row);
+  });
 }
 
 // ---------------- HUD Compacto Flutuante (Single-Slider Pill) ----------------
@@ -1153,14 +2080,14 @@ const settingsPill = {
       // Modo Desktop / Tela Cheia
       list.push({
         id: 'desktop-fov',
-        label: 'Campo de Visão (FOV)',
+        label: 'Zoom / Abertura (FOV)',
         group: 'desktopView',
         key: 'fov',
-        min: 30,
+        min: 25,
         max: 120,
         step: 1,
         defaultVal: () => presetValuesFor('desktopView', state.desktopView.basePreset)?.fov ?? 75,
-        fmt: (v) => Math.round(v) + '°',
+        fmt: (v) => `${calcZoomPercent(v, 75)}% (${Math.round(v)}°)`,
       });
       list.push({
         id: 'desktop-k1',
@@ -1210,14 +2137,14 @@ const settingsPill = {
       // Modo Óculos VR (Headset)
       list.push({
         id: 'headset-fov',
-        label: 'Campo de Visão (FOV)',
+        label: 'Zoom / Abertura (FOV)',
         group: 'headsetSettings',
         key: 'fov',
-        min: 60,
-        max: 120,
+        min: 45,
+        max: 125,
         step: 1,
         defaultVal: () => presetValuesFor('headsetSettings', state.headsetSettings.basePreset)?.fov ?? 82,
-        fmt: (v) => Math.round(v) + '°',
+        fmt: (v) => `${calcZoomPercent(v, 82)}% (${Math.round(v)}°)`,
       });
       list.push({
         id: 'headset-k1',
@@ -1346,6 +2273,22 @@ const settingsPill = {
         defaultVal: 0,
         fmt: (v) => (v > 0 ? '+' : '') + v.toFixed(1) + '°',
       });
+
+      // Olho Dominante no Modo Óculos
+      list.push({
+        id: 'dominant-eye',
+        label: 'Olho Dominante',
+        min: -1,
+        max: 1,
+        step: 1,
+        defaultVal: 0,
+        getValue: () => (state.dominantEye === 'left' ? -1 : state.dominantEye === 'right' ? 1 : 0),
+        setValue: (v) => {
+          const eye = v < -0.5 ? 'left' : v > 0.5 ? 'right' : 'both';
+          setDominantEye(eye, true);
+        },
+        fmt: (v) => (v < -0.5 ? 'Esquerdo' : v > 0.5 ? 'Direito' : 'Ambos'),
+      });
     }
 
     // --- Calibração Fisheye (apenas se projeção fisheye) ---
@@ -1430,6 +2373,102 @@ const settingsPill = {
       defaultVal: DEFAULT_IMAGE.gamma,
       fmt: (v) => v.toFixed(2),
     });
+
+    // --- Inclinação / Modo Assistir Deitado ---
+    list.push({
+      id: 'pitch-recline',
+      label: 'Reclinar / Deitado (Pitch)',
+      min: -60,
+      max: 80,
+      step: 2,
+      defaultVal: 0,
+      getValue: () => (look ? look.getPitchOffsetDeg() : 0),
+      setValue: (v) => {
+        if (look) look.setPitchOffset(v * (Math.PI / 180));
+      },
+      fmt: (v) => (v > 0 ? `+${Math.round(v)}° (Subir)` : v < 0 ? `${Math.round(v)}° (Descer)` : '0° (Nível)'),
+    });
+
+    // --- Modo Cinema: Curvatura e Distância (projeção plana) ---
+    if (state.format?.projection === 'flat') {
+      list.push({
+        id: 'cinema-dist',
+        label: 'Distância da Tela (Cinema)',
+        min: 1.5,
+        max: 10.0,
+        step: 0.1,
+        defaultVal: 2.8,
+        getValue: () => (vr ? vr.screenDistance : (state.cinema?.distance || 2.8)),
+        setValue: (v) => {
+          if (vr) vr.setCinemaScreen({ distance: v });
+          if (state.cinema) state.cinema.distance = v;
+          store.set('cinema_distance', v);
+        },
+        fmt: (v) => v.toFixed(1) + 'm',
+      });
+      list.push({
+        id: 'cinema-curv',
+        label: 'Curvatura da Tela (IMAX)',
+        min: 0.0,
+        max: 1.0,
+        step: 0.05,
+        defaultVal: 0.35,
+        getValue: () => (vr ? vr.screenCurvature : (state.cinema?.curvature || 0.35)),
+        setValue: (v) => {
+          if (vr) vr.setCinemaScreen({ curvature: v });
+          if (state.cinema) state.cinema.curvature = v;
+          store.set('cinema_curvature', v);
+        },
+        fmt: (v) => (v <= 0.02 ? 'Plana (0%)' : `${Math.round(v * 100)}% Curva`),
+      });
+      list.push({
+        id: 'cinema-scale',
+        label: 'Escala da Tela',
+        min: 0.5,
+        max: 2.0,
+        step: 0.05,
+        defaultVal: 1.0,
+        getValue: () => (vr ? vr.screenScale : (state.cinema?.scale || 1.0)),
+        setValue: (v) => {
+          if (vr) vr.setCinemaScreen({ scale: v });
+          if (state.cinema) state.cinema.scale = v;
+          store.set('cinema_scale', v);
+        },
+        fmt: (v) => Math.round(v * 100) + '%',
+      });
+    }
+
+    // --- Amplificador de Áudio (Volume Boost) ---
+    list.push({
+      id: 'audio-boost',
+      label: 'Amplificador de Áudio (Boost)',
+      min: 1.0,
+      max: 3.0,
+      step: 0.1,
+      defaultVal: 1.0,
+      getValue: () => getAudioGain(),
+      setValue: (v) => {
+        setAudioGain(v);
+      },
+      fmt: (v) => (v <= 1.01 ? '100% (Normal)' : `${Math.round(v * 100)}% ⚡`),
+    });
+
+    // --- Seleção por Olhar (no Modo Óculos) ---
+    if (isHeadset) {
+      list.push({
+        id: 'gaze-toggle',
+        label: 'Seleção por Olhar (Gaze)',
+        min: 0,
+        max: 1,
+        step: 1,
+        defaultVal: 0,
+        getValue: () => (state.gazeActive ? 1 : 0),
+        setValue: (v) => {
+          setGazeActive(v > 0.5);
+        },
+        fmt: (v) => (v > 0.5 ? 'Ativado' : 'Desativado'),
+      });
+    }
 
     return list;
   },
@@ -1536,10 +2575,12 @@ const settingsPill = {
 
   renderPresetUI() {
     if (!els.settingsPill) return;
+    reloadPresets();
     const group = activeOpticsGroup();
     const label = currentPresetLabel(group);
     const isCustom = label === 'Personalizado';
     const activePresetId = state[group].basePreset;
+    const isUserCustom = !!VR_PRESETS[activePresetId]?.custom;
 
     els.settingsPill.querySelectorAll('.pill-pane').forEach((pane) => {
       const nameEl = pane.querySelector('.pill-preset-name');
@@ -1548,14 +2589,38 @@ const settingsPill = {
       const btn = pane.querySelector('.pill-preset-btn');
       if (btn) btn.classList.toggle('is-custom', isCustom);
 
+      const quickSaveBtn = pane.querySelector('.pill-preset-quick-save');
+      if (quickSaveBtn) {
+        if (isCustom && isUserCustom) {
+          quickSaveBtn.title = `Atualizar preset "${VR_PRESETS[activePresetId]?.name}"`;
+          const span = quickSaveBtn.querySelector('span');
+          if (span) span.textContent = 'Atualizar';
+        } else {
+          quickSaveBtn.title = 'Salvar ajustes atuais como novo preset';
+          const span = quickSaveBtn.querySelector('span');
+          if (span) span.textContent = 'Salvar';
+        }
+      }
+
       const menu = pane.querySelector('.pill-preset-menu');
       if (menu) {
         let html = '';
         PRESET_ORDER.forEach((id) => {
           const p = VR_PRESETS[id];
           const isActive = !isCustom && activePresetId === id;
-          html += `<li class="pill-preset-item ${isActive ? 'active' : ''}" data-preset="${id}" role="option" aria-selected="${isActive}">${p.name}</li>`;
+          const badge = p.custom ? '<span class="pill-preset-badge">Meu</span>' : '';
+          html += `<li class="pill-preset-item ${isActive ? 'active' : ''}" data-preset="${id}" role="option" aria-selected="${isActive}">
+            <span>${p.name}</span> ${badge}
+          </li>`;
         });
+
+        html += '<li class="pill-preset-divider"></li>';
+        html += '<li class="pill-preset-action-item" data-action="save-new">💾 Salvar como Novo Preset...</li>';
+        if (isUserCustom) {
+          html += `<li class="pill-preset-action-item" data-action="overwrite">⚡ Atualizar "${VR_PRESETS[activePresetId]?.name}"</li>`;
+        }
+        html += '<li class="pill-preset-action-item" data-action="manage">🎛️ Gerenciar Presets...</li>';
+
         menu.innerHTML = html;
       }
     });
@@ -1578,7 +2643,7 @@ const settingsPill = {
   adjust(dir) {
     const param = this.getCurrentParam();
     if (!param) return;
-    const curVal = Number(state[param.group][param.key]);
+    const curVal = typeof param.getValue === 'function' ? param.getValue() : Number(state[param.group][param.key]);
     const step = param.step * (dir > 0 ? 1 : -1);
     const newVal = clamp(Number((curVal + step).toFixed(4)), param.min, param.max);
     this.setValue(newVal);
@@ -1588,7 +2653,11 @@ const settingsPill = {
   setValue(val) {
     const param = this.getCurrentParam();
     if (!param) return;
-    state[param.group][param.key] = val;
+    if (typeof param.setValue === 'function') {
+      param.setValue(val);
+    } else {
+      state[param.group][param.key] = val;
+    }
     if (param.id === 'desktop-fov' && vr && !state.headset) {
       vr.viewFov = val;
     }
@@ -1615,7 +2684,7 @@ const settingsPill = {
     const param = this.getCurrentParam();
     if (!param) return;
 
-    const val = Number(state[param.group][param.key]);
+    const val = typeof param.getValue === 'function' ? param.getValue() : Number(state[param.group][param.key]);
     const formattedVal = param.fmt(val);
     const stepText = `${this.activeParamIndex + 1} / ${params.length}`;
     const percent = Math.max(0, Math.min(100, ((val - param.min) / (param.max - param.min)) * 100));
@@ -1655,7 +2724,15 @@ const settingsPill = {
       });
     });
 
-    // Presets dropdown: seleção de item via delegação
+    // Botão de salvar rápido na barra do preset
+    els.settingsPill.querySelectorAll('.pill-preset-quick-save').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        handleQuickSavePreset();
+      });
+    });
+
+    // Presets dropdown: seleção de item ou ação
     els.settingsPill.querySelectorAll('.pill-preset-menu').forEach((menu) => {
       menu.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -1663,6 +2740,27 @@ const settingsPill = {
         if (item && item.dataset.preset) {
           applyPreset(item.dataset.preset);
           this.closePresetMenu();
+          return;
+        }
+        const actionItem = e.target.closest('.pill-preset-action-item');
+        if (actionItem && actionItem.dataset.action) {
+          const act = actionItem.dataset.action;
+          this.closePresetMenu();
+          if (act === 'save-new') {
+            const group = activeOpticsGroup();
+            const curP = VR_PRESETS[state[group].basePreset];
+            const defName = `${curP?.name || 'Ajuste'} (Personalizado)`;
+            const name = window.prompt('Nome do novo preset:', defName);
+            if (name) saveCurrentAsPreset(name);
+          } else if (act === 'overwrite') {
+            const group = activeOpticsGroup();
+            const id = state[group].basePreset;
+            if (id && VR_PRESETS[id]) {
+              saveCurrentAsPreset(VR_PRESETS[id].name, id);
+            }
+          } else if (act === 'manage') {
+            openSheet(els.sheetPresets);
+          }
         }
       });
     });
@@ -1780,11 +2878,26 @@ const settingsPill = {
 settingsPill.init();
 window.settingsPill = settingsPill;
 
+layoutEditor = new HudLayoutEditor({
+  store,
+  getMode: () => (state.headset ? 'headset' : 'screen'),
+  getHeadsetSettings: () => state.headsetSettings,
+  hud,
+  onLayoutChange: () => {
+    if (state.controlsVisible) scheduleHide();
+  },
+  setControlsVisible,
+});
+window.layoutEditor = layoutEditor;
+
 // ---------------- Sheets ----------------
 function openSheet(sheet) {
   closeSheets();
   if (settingsPill?.isOpen()) {
     settingsPill.close();
+  }
+  if (layoutEditor?.isOpen()) {
+    layoutEditor.close();
   }
   if (els.btnToggleSmoothStream && (sheet === els.sheetFormat || sheet === els.sheetSettings)) {
     const isDownscaled = !!state.currentCloudOptions?.forceDownscale;
@@ -1795,6 +2908,9 @@ function openSheet(sheet) {
   }
   if (sheet === els.sheetFormat && state.headset) {
     syncFormatStereo();
+  }
+  if (sheet === els.sheetPresets) {
+    renderPresetsManagerSheet();
   }
   sheet.classList.add('show');
   els.backdrop.classList.add('show');
@@ -1825,7 +2941,11 @@ function closeSheets() {
   if (els.sheetCodecs) els.sheetCodecs.classList.remove('show');
   if (els.sheetBatch) els.sheetBatch.classList.remove('show');
   if (els.sheetCloudFiles) els.sheetCloudFiles.classList.remove('show');
+  if (els.sheetManageFolders) els.sheetManageFolders.classList.remove('show');
+  if (els.sheetPresets) els.sheetPresets.classList.remove('show');
+  if (els.sheetBookmarks) els.sheetBookmarks.classList.remove('show');
   if (settingsPill?.isOpen()) settingsPill.close();
+  if (layoutEditor?.isOpen()) layoutEditor.close();
   els.backdrop.classList.remove('show');
   scheduleHide();
 }
@@ -1834,443 +2954,84 @@ const sheetOpen = () => els.backdrop.classList.contains('show');
 
 els.backdrop.addEventListener('click', closeSheets);
 document.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', closeSheets));
-$('btn-format').addEventListener('click', () => openSheet(els.sheetFormat));
-els.formatChip.addEventListener('click', () => openSheet(els.sheetFormat));
-$('btn-settings').addEventListener('click', () => settingsPill.open());
+document.querySelectorAll('#controls .btn-format').forEach((b) => b.addEventListener('click', () => openSheet(els.sheetFormat)));
+document.querySelectorAll('#controls .btn-format-chip').forEach((b) => b.addEventListener('click', () => openSheet(els.sheetFormat)));
+document.querySelectorAll('#controls .btn-settings').forEach((b) => b.addEventListener('click', () => settingsPill.open()));
+document.querySelectorAll('#controls .btn-layout').forEach((b) => b.addEventListener('click', (e) => {
+  e.stopPropagation();
+  layoutEditor?.toggle();
+}));
+$('btn-open-layout-sheet')?.addEventListener('click', () => {
+  closeSheets();
+  layoutEditor?.open();
+});
+
+document.querySelectorAll('#controls .btn-bookmark').forEach((b) => b.addEventListener('click', (e) => {
+  e.stopPropagation();
+  openBookmarksSheet();
+}));
+els.btnAddBookmark?.addEventListener('click', () => addCurrentBookmark());
+
+document.querySelectorAll('#controls .btn-prev').forEach((b) => b.addEventListener('click', (e) => {
+  e.stopPropagation();
+  playPrevVideo();
+}));
+document.querySelectorAll('#controls .btn-next').forEach((b) => b.addEventListener('click', (e) => {
+  e.stopPropagation();
+  playNextVideo();
+}));
+
+// Botões de Zoom no player
+document.querySelectorAll('.btn-zoom-in').forEach((b) => b.addEventListener('click', (e) => {
+  e.stopPropagation();
+  adjustZoomByStep(1);
+}));
+document.querySelectorAll('.btn-zoom-out').forEach((b) => b.addEventListener('click', (e) => {
+  e.stopPropagation();
+  adjustZoomByStep(-1);
+}));
+
+// Gerenciador de Presets no menu
+els.btnOpenPresetsSheet?.addEventListener('click', () => openSheet(els.sheetPresets));
+els.btnSaveNewPreset?.addEventListener('click', () => {
+  const name = els.inputNewPresetName?.value?.trim();
+  if (name) {
+    saveCurrentAsPreset(name);
+    if (els.inputNewPresetName) els.inputNewPresetName.value = '';
+  } else {
+    toast('Digite um nome para o preset');
+  }
+});
+els.btnRestoreFactoryPresets?.addEventListener('click', () => restoreFactoryPresets());
+
 els.btnHomeHeadset?.addEventListener('click', () => {
   setHeadset(!state.headset);
   toast(state.headset ? '🥽 Modo Óculos: ATIVADO' : 'Modo Tela: ATIVADO');
 });
 els.btnToggleSmoothStream?.addEventListener('click', toggleSmoothStream);
 els.btnShowCodecs?.addEventListener('click', async () => {
-  await renderCodecsUI();
+  await renderCodecsUI({
+    container: els.codecDiagnosticsContent,
+    isElectron,
+    video,
+    state,
+    toast,
+    closeSheets,
+    openVideoSource,
+  });
   openSheet(els.sheetCodecs);
 });
-els.btnShowBatch?.addEventListener('click', openBatchOptimizer);
-els.btnOpenBatchHome?.addEventListener('click', openBatchOptimizer);
 
 // ---------------- Otimização em Lote (Batch) ----------------
-let batchScannedFiles = [];
-let isBatchRunning = false;
-
-async function openBatchOptimizer() {
-  openSheet(els.sheetBatch);
-  if (!els.batchFolderInput.value) {
-    if (isElectron && window.electronAPI.batchGetDefaultFolder) {
-      const def = await window.electronAPI.batchGetDefaultFolder();
-      if (def) els.batchFolderInput.value = def;
-    } else {
-      const saved = store.get('batch_folder', '');
-      if (saved) els.batchFolderInput.value = saved;
-    }
-  }
-  if (els.batchFolderInput.value) {
-    if (!batchScannedFiles.length) {
-      scanBatchFolder(els.batchFolderInput.value);
-    }
-  } else {
-    if (!isElectron) {
-      // No modo web/servidor, busca pasta padrão configurada no servidor PC
-      scanBatchFolder('');
-    } else {
-      els.batchSummary.hidden = false;
-      els.batchSummary.textContent = 'Clique em "Escolher" para selecionar a pasta contendo seus vídeos.';
-    }
-  }
-}
-
-async function scanBatchFolder(folderPath) {
-  if (isElectron && !folderPath) {
-    if (window.electronAPI.batchSelectFolder) {
-      const folder = await window.electronAPI.batchSelectFolder();
-      if (folder) {
-        folderPath = folder;
-        els.batchFolderInput.value = folder;
-        store.set('batch_folder', folder);
-      } else {
-        return;
-      }
-    } else {
-      toast('Selecione uma pasta de vídeos');
-      return;
-    }
-  }
-
-  els.batchSummary.hidden = false;
-  els.batchSummary.textContent = 'Escaneando pasta e analisando codecs com FFmpeg/ffprobe...';
-  if (els.batchToolbar) els.batchToolbar.hidden = true;
-  els.batchList.hidden = true;
-  els.btnBatchStart.disabled = true;
-
-  try {
-    let videos = [];
-    if (isElectron && window.electronAPI.batchScan) {
-      videos = await window.electronAPI.batchScan(folderPath);
-    } else {
-      const base = els.serverUrlInput.value || location.origin;
-      const url = folderPath ? `${base}/api/optimize/scan?folder=${encodeURIComponent(folderPath)}` : `${base}/api/optimize/scan`;
-      const res = await fetch(url);
-      if (!res.ok) throw new Error('Servidor retornou erro ' + res.status);
-      const data = await res.json();
-      videos = data.videos || [];
-      if (data.folder && !els.batchFolderInput.value) {
-        els.batchFolderInput.value = data.folder;
-        folderPath = data.folder;
-      }
-    }
-
-    batchScannedFiles = videos;
-    renderBatchList(videos, folderPath || els.batchFolderInput.value);
-  } catch (err) {
-    els.batchSummary.textContent = 'Erro ao escanear pasta: ' + err.message;
-    if (els.batchToolbar) els.batchToolbar.hidden = true;
-  }
-}
-
-function renderBatchList(videos, folderPath) {
-  els.batchList.innerHTML = '';
-  if (!videos.length) {
-    els.batchSummary.textContent = `Nenhum arquivo de vídeo encontrado em ${folderPath || 'esta pasta'}.`;
-    if (els.batchToolbar) els.batchToolbar.hidden = true;
-    els.batchList.hidden = true;
-    els.btnBatchStart.disabled = true;
-    return;
-  }
-
-  const needsOpt = videos.filter((v) => {
-    const isReady = v.probe?.isIosCompatible ?? v.isIosCompatible;
-    return !isReady;
-  });
-  els.batchSummary.textContent = `${videos.length} vídeo(s) encontrado(s): ${needsOpt.length} precisam de otimização para iPhone/PC.`;
-  if (els.batchToolbar) els.batchToolbar.hidden = false;
-  els.batchList.hidden = false;
-
-  videos.forEach((v, index) => {
-    const item = document.createElement('div');
-    item.className = 'batch-item clickable';
-
-    const p = v.probe || {};
-    const isReady = p.isIosCompatible ?? v.isIosCompatible;
-    const action = p.action ?? v.action ?? (isReady ? 'ready' : 'transcode');
-    const badgeClass = isReady ? 'badge-ready' : (action === 'remux' ? 'badge-remux' : 'badge-transcode');
-    const badgeText = isReady ? '✅ Compatível' : (action === 'remux' ? '⚡ Remux Rápido' : '🔄 Transcode');
-
-    item.innerHTML = `
-      <input type="checkbox" class="batch-checkbox" data-index="${index}" ${!isReady ? 'checked' : ''}>
-      <div class="batch-item-info">
-        <span class="batch-item-name">${v.name}</span>
-        <span class="batch-item-meta">${v.size || ''} • Vídeo: ${p.videoCodec || '?'} | Áudio: ${p.audioCodec || '?'}</span>
-      </div>
-      <span class="badge-action ${badgeClass}">${badgeText}</span>
-    `;
-
-    item.addEventListener('click', (e) => {
-      if (e.target.classList.contains('batch-checkbox')) return;
-      const cb = item.querySelector('.batch-checkbox');
-      if (cb) {
-        cb.checked = !cb.checked;
-        updateBatchStartButton();
-      }
-    });
-
-    els.batchList.appendChild(item);
-  });
-
-  updateBatchStartButton();
-
-  els.batchList.querySelectorAll('.batch-checkbox').forEach((cb) => {
-    cb.addEventListener('change', updateBatchStartButton);
-  });
-}
-
-function updateBatchStartButton() {
-  const checked = els.batchList.querySelectorAll('.batch-checkbox:checked');
-  els.btnBatchStart.disabled = checked.length === 0 || isBatchRunning;
-  els.btnBatchStart.textContent = `Iniciar Otimização (${checked.length} vídeo${checked.length === 1 ? '' : 's'})`;
-}
-
-async function startBatchOptimization() {
-  const checkedCheckboxes = [...els.batchList.querySelectorAll('.batch-checkbox:checked')];
-  const selectedFiles = checkedCheckboxes.map((cb) => batchScannedFiles[Number(cb.dataset.index)]).filter(Boolean);
-
-  if (!selectedFiles.length) {
-    toast('Selecione pelo menos um vídeo para otimizar.');
-    return;
-  }
-
-  isBatchRunning = true;
-  els.btnBatchStart.disabled = true;
-  els.btnBatchStart.style.display = 'none';
-  els.btnBatchCancel.style.display = 'block';
-  els.batchProgressBox.hidden = false;
-  els.batchProgressPercent.textContent = '0%';
-  els.batchProgressFill.style.width = '0%';
-  els.batchProgressSub.textContent = `Preparando fila de ${selectedFiles.length} vídeo(s)...`;
-
-  const folderPath = els.batchFolderInput.value;
-
-  if (isElectron && window.electronAPI.batchStart) {
-    try {
-      const res = await window.electronAPI.batchStart({
-        folderPath,
-        files: selectedFiles,
-      });
-
-      isBatchRunning = false;
-      els.btnBatchCancel.style.display = 'none';
-      els.btnBatchStart.style.display = 'block';
-      els.btnBatchStart.disabled = false;
-      els.btnBatchStart.textContent = 'Otimização Concluída!';
-      els.batchProgressTitle.textContent = '🎉 Todos os vídeos foram otimizados!';
-      els.batchProgressSub.textContent = 'Salvos na mesma pasta de origem com a tag "_otimizado.mp4"';
-      toast('🎉 Vídeos otimizados salvos na mesma pasta com a tag "_otimizado.mp4"');
-      scanBatchFolder(folderPath);
-    } catch (err) {
-      isBatchRunning = false;
-      els.btnBatchCancel.style.display = 'none';
-      els.btnBatchStart.style.display = 'block';
-      els.btnBatchStart.disabled = false;
-      toast('Erro na otimização: ' + err.message);
-    }
-  } else {
-    try {
-      const base = els.serverUrlInput.value || location.origin;
-      await fetch(`${base}/api/optimize/start`, { method: 'POST' });
-      toast('Otimização iniciada no computador!');
-      pollServerBatchStatus();
-    } catch (err) {
-      isBatchRunning = false;
-      els.btnBatchCancel.style.display = 'none';
-      els.btnBatchStart.style.display = 'block';
-      toast('Erro ao iniciar no servidor: ' + err.message);
-    }
-  }
-}
-
-let serverBatchPollInterval = null;
-
-async function pollServerBatchStatus() {
-  if (serverBatchPollInterval) clearInterval(serverBatchPollInterval);
-  const base = els.serverUrlInput.value || location.origin;
-  serverBatchPollInterval = setInterval(async () => {
-    try {
-      const res = await fetch(`${base}/api/optimize/status`);
-      const st = await res.json();
-      if (st.running) {
-        els.batchProgressTitle.textContent = `Otimizando [${st.current}/${st.total}]: ${st.currentFile}`;
-        els.batchProgressPercent.textContent = `${st.percent}%`;
-        els.batchProgressFill.style.width = `${st.percent}%`;
-        els.batchProgressSub.textContent = st.speed ? `Velocidade: ${st.speed}` : 'Processando...';
-      } else if (st.percent === 100) {
-        clearInterval(serverBatchPollInterval);
-        serverBatchPollInterval = null;
-        isBatchRunning = false;
-        els.btnBatchCancel.style.display = 'none';
-        els.btnBatchStart.style.display = 'block';
-        els.btnBatchStart.disabled = false;
-        els.batchProgressTitle.textContent = '🎉 Otimização concluída!';
-        els.batchProgressSub.textContent = 'Salvos na mesma pasta com "_otimizado.mp4" prontos para iPhone e PC!';
-        toast('🎉 Vídeos otimizados salvos com a tag "_otimizado.mp4"!');
-      }
-    } catch {
-      clearInterval(serverBatchPollInterval);
-      serverBatchPollInterval = null;
-    }
-  }, 1000);
-}
-
-// Ouvinte de progresso da otimização no Electron
-if (isElectron && window.electronAPI.onBatchProgress) {
-  window.electronAPI.onBatchProgress((data) => {
-    if (data.status === 'processing') {
-      els.batchProgressTitle.textContent = `[${data.currentIndex}/${data.total}] ${data.currentFile}`;
-      els.batchProgressPercent.textContent = `${data.percent}%`;
-      els.batchProgressFill.style.width = `${data.percent}%`;
-      els.batchProgressSub.textContent = data.speed ? `Velocidade: ${data.speed}` : 'Convertendo...';
-    }
-  });
-}
-
-els.btnBatchBrowse?.addEventListener('click', async () => {
-  if (isElectron && window.electronAPI.batchSelectFolder) {
-    const folder = await window.electronAPI.batchSelectFolder();
-    if (folder) {
-      els.batchFolderInput.value = folder;
-      store.set('batch_folder', folder);
-      scanBatchFolder(folder);
-    }
-  } else {
-    toast('No navegador/Safari, a pasta é gerenciada no servidor PC.');
-  }
+const batchOptimizer = new BatchOptimizerModal({
+  els,
+  store,
+  isElectron,
+  openSheet,
+  toast,
 });
-
-els.btnBatchScan?.addEventListener('click', () => {
-  scanBatchFolder(els.batchFolderInput.value);
-});
-
-els.btnBatchSelectAll?.addEventListener('click', () => {
-  els.batchList.querySelectorAll('.batch-checkbox').forEach((cb) => { cb.checked = true; });
-  updateBatchStartButton();
-});
-
-els.btnBatchSelectNeeded?.addEventListener('click', () => {
-  els.batchList.querySelectorAll('.batch-checkbox').forEach((cb) => {
-    const v = batchScannedFiles[Number(cb.dataset.index)];
-    const isReady = v?.probe?.isIosCompatible ?? v?.isIosCompatible;
-    cb.checked = !isReady;
-  });
-  updateBatchStartButton();
-});
-
-els.btnBatchSelectNone?.addEventListener('click', () => {
-  els.batchList.querySelectorAll('.batch-checkbox').forEach((cb) => { cb.checked = false; });
-  updateBatchStartButton();
-});
-
-els.btnBatchStart?.addEventListener('click', startBatchOptimization);
-
-els.btnBatchCancel?.addEventListener('click', () => {
-  if (serverBatchPollInterval) {
-    clearInterval(serverBatchPollInterval);
-    serverBatchPollInterval = null;
-  }
-  if (isElectron && window.electronAPI.batchCancel) {
-    window.electronAPI.batchCancel();
-  } else {
-    const base = els.serverUrlInput.value || location.origin;
-    fetch(`${base}/api/optimize/cancel`, { method: 'POST' }).catch(() => {});
-  }
-  isBatchRunning = false;
-  els.btnBatchCancel.style.display = 'none';
-  els.btnBatchStart.style.display = 'block';
-  els.btnBatchStart.disabled = false;
-  els.batchProgressTitle.textContent = 'Otimização cancelada.';
-  toast('Otimização interrompida');
-});
-
-async function renderCodecsUI() {
-  const container = els.codecDiagnosticsContent;
-  if (!container) return;
-  container.innerHTML = '<div style="text-align:center;padding:20px;color:var(--label2);">Carregando diagnóstico...</div>';
-
-  if (!isElectron || !window.electronAPI.getCodecDiagnostics) {
-    container.innerHTML = `
-      <div class="codec-grid">
-        <div class="codec-card">
-          <span class="codec-title">Ambiente</span>
-          <span class="codec-val">Navegador Web / PWA</span>
-          <span class="codec-sub">Safari / WebKit / iOS</span>
-        </div>
-        <div class="codec-card">
-          <span class="codec-title">H.264 (AVC)</span>
-          <span class="codec-val badge-green">✔ Suportado</span>
-          <span class="codec-sub">Aceleração de hardware</span>
-        </div>
-        <div class="codec-card">
-          <span class="codec-title">HEVC (H.265)</span>
-          <span class="codec-val ${video.canPlayType('video/mp4; codecs="hvc1.1.6.L93.B0"') ? 'badge-green' : 'badge-orange'}">
-            ${video.canPlayType('video/mp4; codecs="hvc1.1.6.L93.B0"') ? '✔ Suportado' : 'Depende do aparelho'}
-          </span>
-          <span class="codec-sub">Até 4K HDR</span>
-        </div>
-        <div class="codec-card">
-          <span class="codec-title">Áudio AAC / MP3</span>
-          <span class="codec-val badge-green">✔ Suportado</span>
-          <span class="codec-sub">Nativo</span>
-        </div>
-      </div>
-      <p class="sheet-footnote">No iPhone e Safari, use vídeos em formato MP4 ou MOV codificados em H.264 (AVC) com áudio AAC para 100% de compatibilidade.</p>
-    `;
-    return;
-  }
-
-  try {
-    const diag = await window.electronAPI.getCodecDiagnostics();
-    const canHevc = video.canPlayType('video/mp4; codecs="hvc1.1.6.L93.B0"') !== '';
-    const ffmpegOk = diag.tools?.ffmpeg?.available;
-
-    let currentFileOptBtn = '';
-    if (state.originalPath) {
-      currentFileOptBtn = `
-        <div style="margin-top:14px;background:var(--bg2);padding:14px;border-radius:12px;border:1px solid rgba(255,255,255,0.08);">
-          <strong style="display:block;font-size:14px;margin-bottom:4px;">Vídeo atual: ${state.fileName}</strong>
-          <small style="display:block;color:var(--label2);font-size:12px;margin-bottom:10px;">Caso esteja mudo (áudio AC-3/DTS) ou travando, otimize rapidamente em formato MP4/AAC sem perda de qualidade visual.</small>
-          <button id="btn-opt-current" class="btn-primary" style="height:42px;font-size:14px;border-radius:10px;">
-            ⚡ Otimizar Áudio/Contêiner deste Vídeo
-          </button>
-        </div>
-      `;
-    }
-
-    container.innerHTML = `
-      <div class="codec-grid">
-        <div class="codec-card">
-          <span class="codec-title">Aceleração GPU</span>
-          <span class="codec-val badge-green">✔ Ativada</span>
-          <span class="codec-sub">Direct3D / WebGL</span>
-        </div>
-        <div class="codec-card">
-          <span class="codec-title">H.264 (AVC)</span>
-          <span class="codec-val badge-green">✔ 100% Nativo</span>
-          <span class="codec-sub">Aceleração por hardware GPU</span>
-        </div>
-        <div class="codec-card">
-          <span class="codec-title">HEVC (H.265)</span>
-          <span class="codec-val ${canHevc ? 'badge-green' : 'badge-orange'}">${canHevc ? '✔ GPU Hardware' : 'Requer Extensão'}</span>
-          <span class="codec-sub">Media Foundation</span>
-        </div>
-        <div class="codec-card">
-          <span class="codec-title">VP9 / AV1</span>
-          <span class="codec-val badge-green">✔ Suportado</span>
-          <span class="codec-sub">libdav1d + GPU</span>
-        </div>
-        <div class="codec-card">
-          <span class="codec-title">Contêineres</span>
-          <span class="codec-val badge-green">MP4, MKV, WebM, MOV</span>
-          <span class="codec-sub">Range requests nativos</span>
-        </div>
-        <div class="codec-card">
-          <span class="codec-title">Ferramenta FFmpeg</span>
-          <span class="codec-val ${ffmpegOk ? 'badge-green' : 'badge-orange'}">${ffmpegOk ? (diag.tools?.ffmpeg?.isBundled ? '✔ Embutido' : '✔ Detectado') : 'Não instalado'}</span>
-          <span class="codec-sub">${ffmpegOk ? (diag.tools?.ffmpeg?.isBundled ? '✔ Binário estático integrado' : 'Remux de AC-3/DTS/AVI ativo') : 'Opcional'}</span>
-        </div>
-      </div>
-      <p class="sheet-footnote">
-        No executável Windows, a decodificação de vídeo usa aceleração total da sua GPU. Vídeos em MKV, MP4, WebM e MOV abrem nativamente.
-      </p>
-      ${currentFileOptBtn}
-    `;
-
-    const optBtn = $('btn-opt-current');
-    if (optBtn) {
-      optBtn.addEventListener('click', async () => {
-        optBtn.disabled = true;
-        optBtn.textContent = '⏳ Otimizando com FFmpeg...';
-        toast('Otimizando arquivo em segundo plano...');
-        try {
-          const res = await window.electronAPI.optimizeMedia(state.originalPath);
-          if (res && res.success) {
-            toast('✅ Arquivo otimizado! Recarregando...');
-            closeSheets();
-            openVideoSource({
-              url: res.url,
-              name: res.name,
-              size: res.size,
-              isBlob: false,
-              originalPath: res.path,
-            });
-          }
-        } catch (e) {
-          toast('Falha ao otimizar: ' + e.message);
-          optBtn.disabled = false;
-          optBtn.textContent = '⚡ Otimizar Áudio/Contêiner deste Vídeo';
-        }
-      });
-    }
-  } catch (err) {
-    container.innerHTML = `<p class="sheet-footnote">Erro ao obter diagnóstico: ${err.message}</p>`;
-  }
-}
+els.btnShowBatch?.addEventListener('click', () => batchOptimizer.open());
+els.btnOpenBatchHome?.addEventListener('click', () => batchOptimizer.open());
 
 // ---------------- Reprodução ----------------
 function requestGyroOnce() {
@@ -2323,10 +3084,14 @@ async function seekHls(targetTime) {
   state.hlsOffset = clampedTarget;
 
   // Atualização visual imediata do display e da barra
-  els.tCur.textContent = fmtTime(clampedTarget);
+  const seekCurFmt = fmtTime(clampedTarget);
+  document.querySelectorAll('#controls .t-cur').forEach(el => el.textContent = seekCurFmt);
   if (state.totalDuration > 0) {
-    els.scrubber.value = Math.round((clampedTarget / state.totalDuration) * 1000);
-    setRangeFill(els.scrubber);
+    const seekVal = Math.round((clampedTarget / state.totalDuration) * 1000);
+    document.querySelectorAll('#controls .scrubber').forEach(s => {
+      s.value = seekVal;
+      setRangeFill(s);
+    });
   }
 
   state.hlsSeekEpoch = Date.now();
@@ -2398,21 +3163,142 @@ function handleTap() {
   setControlsVisible(!state.controlsVisible);
 }
 
-els.bigPlay.addEventListener('click', playVideo);
-els.btnPlay.addEventListener('click', togglePlay);
-$('btn-back10').addEventListener('click', () => seekBy(-10));
-$('btn-fwd10').addEventListener('click', () => seekBy(10));
-els.btnMute.addEventListener('click', () => {
-  video.muted = !video.muted;
-  els.btnMute.querySelector('use').setAttribute('href', video.muted ? '#i-muted' : '#i-speaker');
+// Sincronização de controles divididos (Olho Esquerdo e Olho Direito)
+function updateAllTitles(text) {
+  document.querySelectorAll('#controls .title').forEach(el => {
+    el.textContent = text;
+  });
+}
+
+function updateAllFormatChips(text) {
+  document.querySelectorAll('#controls .btn-format-chip').forEach(el => {
+    el.textContent = text;
+  });
+}
+
+function setPlayIcon(playing) {
+  document.querySelectorAll('#controls .btn-play').forEach(btn => {
+    btn.querySelector('use')?.setAttribute('href', playing ? '#i-pause' : '#i-play');
+    btn.setAttribute('aria-label', playing ? 'Pausar' : 'Reproduzir');
+  });
+  document.querySelectorAll('#controls .big-play').forEach(btn => {
+    btn.querySelector('use')?.setAttribute('href', playing ? '#i-pause' : '#i-play');
+  });
+}
+
+function setMuteIcon(muted) {
+  document.querySelectorAll('#controls .btn-mute').forEach(btn => {
+    btn.querySelector('use')?.setAttribute('href', muted ? '#i-muted' : '#i-speaker');
+    btn.setAttribute('aria-label', muted ? 'Ativar som' : 'Mudo');
+  });
+}
+
+function setHeadsetIcon(on) {
+  document.querySelectorAll('#controls .btn-headset').forEach(btn => {
+    btn.classList.toggle('active', on);
+  });
+}
+
+function setSpatialAudioIcon(active) {
+  document.querySelectorAll('#controls .btn-spatial').forEach((btn) => {
+    btn.classList.toggle('active', !!active);
+    btn.setAttribute('aria-label', active ? 'Desativar Áudio Espacial' : 'Ativar Áudio Espacial (HRTF)');
+  });
+}
+
+function updateSpatialAudioBadge(spatialType) {
+  const isNative3D = spatialType === 'ambisonics-foa' || spatialType === 'surround-5.1' || spatialType === 'surround-7.1';
+  document.querySelectorAll('#controls .spatial-badge').forEach((badge) => {
+    badge.hidden = !isNative3D;
+    if (isNative3D) {
+      const label = spatialType === 'ambisonics-foa' ? '🎧 Ambisonics 3D' : (spatialType.includes('7.1') ? '🎧 Surround 7.1' : '🎧 Surround 5.1');
+      badge.innerHTML = `<span class="spatial-badge-dot"></span><span>${label}</span>`;
+    }
+  });
+}
+
+function setSpatialAudioMode(mode, enabled) {
+  ensureEngine();
+  currentSpatialMode = mode;
+  spatialAudio.configure(mode, enabled);
+  setSpatialAudioIcon(enabled);
+}
+
+function toggleSpatialAudio() {
+  const willEnable = !(spatialAudio && spatialAudio.enabled);
+  const targetMode = (currentSpatialMode && currentSpatialMode !== 'none') ? currentSpatialMode : 'stereo-headtracked';
+  setSpatialAudioMode(targetMode, willEnable);
+  store.set('prefer_spatial_audio', willEnable);
+  hud(willEnable ? '🎧 Áudio Espacial ATIVO (HRTF)' : 'Áudio Espacial DESLIGADO', 2500);
+}
+
+function setTelemetryIcon(on) {
+  document.querySelectorAll('#controls .btn-telemetry').forEach(btn => {
+    btn.classList.toggle('active', on);
+  });
+  if (els.btnTelemetry) els.btnTelemetry.classList.toggle('active', on);
+}
+
+function setFullscreenIcon(isFull) {
+  document.querySelectorAll('#controls .btn-fullscreen').forEach(btn => {
+    btn.classList.toggle('active', isFull);
+    btn.querySelector('use')?.setAttribute('href', isFull ? '#i-window' : '#i-fullscreen');
+    btn.setAttribute('aria-label', isFull ? 'Restaurar Modo Janela' : 'Tela Cheia');
+    btn.setAttribute('title', isFull ? 'Modo Janela (F / F11)' : 'Tela Cheia (F / F11)');
+  });
+}
+
+async function toggleFullScreen() {
+  if (isElectron && window.electronAPI?.toggleFullScreen) {
+    const isFull = await window.electronAPI.toggleFullScreen();
+    setFullscreenIcon(isFull);
+    hud(isFull ? 'Tela Cheia' : 'Modo Janela');
+  } else {
+    try {
+      if (!document.fullscreenElement) {
+        await document.documentElement.requestFullscreen?.();
+        setFullscreenIcon(true);
+        hud('Tela Cheia');
+      } else {
+        await document.exitFullscreen?.();
+        setFullscreenIcon(false);
+        hud('Modo Janela');
+      }
+    } catch {
+      // Ignora restrições do navegador se houver
+    }
+  }
+}
+
+document.addEventListener('fullscreenchange', () => {
+  const isFull = !!document.fullscreenElement;
+  setFullscreenIcon(isFull);
 });
-$('btn-recenter').addEventListener('click', () => {
+document.addEventListener('webkitfullscreenchange', () => {
+  const isFull = !!document.webkitFullscreenElement;
+  setFullscreenIcon(isFull);
+});
+
+// Ações dos controles conectados em ambos os olhos
+document.querySelectorAll('#controls .big-play').forEach(btn => btn.addEventListener('click', playVideo));
+document.querySelectorAll('#controls .btn-play').forEach(btn => btn.addEventListener('click', togglePlay));
+document.querySelectorAll('#controls .btn-back10').forEach(btn => btn.addEventListener('click', () => seekBy(-10)));
+document.querySelectorAll('#controls .btn-fwd10').forEach(btn => btn.addEventListener('click', () => seekBy(10)));
+document.querySelectorAll('#controls .btn-mute').forEach(btn => btn.addEventListener('click', () => {
+  video.muted = !video.muted;
+  setMuteIcon(video.muted);
+  hud(video.muted ? 'Mudo' : `Volume ${Math.round(video.volume * 100)}%`);
+}));
+document.querySelectorAll('#controls .btn-recenter').forEach(btn => btn.addEventListener('click', () => {
   requestGyroOnce();
   look.recenter();
   hud('Visão centralizada');
-});
-els.btnHeadset.addEventListener('click', () => setHeadset(!state.headset));
-$('btn-close').addEventListener('click', closePlayer);
+}));
+document.querySelectorAll('#controls .btn-headset').forEach(btn => btn.addEventListener('click', () => setHeadset(!state.headset)));
+document.querySelectorAll('#controls .btn-spatial').forEach(btn => btn.addEventListener('click', toggleSpatialAudio));
+document.querySelectorAll('#controls .btn-fullscreen').forEach(btn => btn.addEventListener('click', toggleFullScreen));
+document.querySelectorAll('#controls .btn-close').forEach(btn => btn.addEventListener('click', closePlayer));
+document.querySelectorAll('#controls .btn-telemetry').forEach(btn => btn.addEventListener('click', toggleTelemetry));
 
 video.addEventListener('play', () => {
   els.player.classList.remove('paused');
@@ -2440,88 +3326,134 @@ video.addEventListener('pause', () => {
   if (!state.headset) setControlsVisible(true);
   releaseWakeLock();
   setAudioSessionType('ambient');
+  const d = (state.isHls && state.totalDuration > 0) ? state.totalDuration : video.duration;
+  const t = (state.isHls ? state.hlsOffset : 0) + (video.currentTime || 0);
+  if (isFinite(d) && d > 0 && isFinite(t)) {
+    saveVideoProgress(t, d, true);
+  }
 });
 video.addEventListener('ended', () => {
   els.player.classList.add('paused');
   setPlayIcon(false);
   setAudioSessionType('ambient');
+  clearVideoProgress();
 });
 video.addEventListener('loadedmetadata', () => {
   if (vr) vr.updatePlane();
-  if (state.isHls && state.totalDuration > 0) {
-    els.tDur.textContent = fmtTime(state.totalDuration);
+  const d = (state.isHls && state.totalDuration > 0) ? state.totalDuration : video.duration;
+  if (isFinite(d) && d > 0) {
+    const durFmt = fmtTime(d);
+    document.querySelectorAll('#controls .t-dur').forEach(el => el.textContent = durFmt);
   }
+  lastShownSecond = -1;
+  updateTimeUI(true);
+});
+video.addEventListener('durationchange', () => {
+  const d = (state.isHls && state.totalDuration > 0) ? state.totalDuration : video.duration;
+  if (isFinite(d) && d > 0) {
+    const durFmt = fmtTime(d);
+    document.querySelectorAll('#controls .t-dur').forEach(el => el.textContent = durFmt);
+  }
+  lastShownSecond = -1;
+  updateTimeUI(true);
+});
+video.addEventListener('timeupdate', () => {
+  updateTimeUI();
+});
+video.addEventListener('seeked', () => {
+  lastShownSecond = -1;
+  updateTimeUI(true);
 });
 video.addEventListener('error', () => {
   if (state.objectUrl) toast('Erro ao reproduzir o vídeo.');
 });
 
-function setPlayIcon(playing) {
-  els.btnPlay.querySelector('use').setAttribute('href', playing ? '#i-pause' : '#i-play');
-  els.btnPlay.setAttribute('aria-label', playing ? 'Pausar' : 'Reproduzir');
-}
-
-// Barra de progresso
-const fmtTime = (s) => {
-  if (!isFinite(s) || s < 0) s = 0;
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const sec = Math.floor(s % 60).toString().padStart(2, '0');
-  return h ? `${h}:${m.toString().padStart(2, '0')}:${sec}` : `${m}:${sec}`;
-};
+// Barra de progresso sincronizada entre ambos os olhos
 
 let lastShownSecond = -1;
-function updateTimeUI() {
-  if (state.scrubbing || !state.controlsVisible || state.isSeekingHls) return;
-  const d = state.isHls && state.totalDuration > 0 ? state.totalDuration : video.duration;
+let lastProgressSaveTime = 0;
+
+function updateTimeUI(force = false) {
+  if (state.scrubbing || state.isSeekingHls) return;
+  const d = (state.isHls && state.totalDuration > 0) ? state.totalDuration : video.duration;
   const t = (state.isHls ? state.hlsOffset : 0) + (video.currentTime || 0);
+
+  // Salva o progresso no armazenamento a cada 3s mesmo se os controles estiverem ocultos
+  const now = Date.now();
+  if (now - lastProgressSaveTime > 3000) {
+    lastProgressSaveTime = now;
+    if (isFinite(d) && d > 0 && t > 3) {
+      saveVideoProgress(t, d);
+    }
+  }
+
+  if (!state.controlsVisible && !force) return;
+
   if (isFinite(d) && d > 0) {
-    els.scrubber.value = Math.round((clamp(t, 0, d) / d) * 1000);
-    setRangeFill(els.scrubber);
+    const sVal = Math.round((clamp(t, 0, d) / d) * 1000);
+    document.querySelectorAll('#controls .scrubber').forEach(scrubber => {
+      scrubber.value = sVal;
+      setRangeFill(scrubber);
+    });
   }
   const sec = Math.floor(t);
-  if (sec !== lastShownSecond) {
+  if (sec !== lastShownSecond || force) {
     lastShownSecond = sec;
-    els.tCur.textContent = fmtTime(t);
-    if (isFinite(d) && d > 0) {
-      els.tDur.textContent = fmtTime(d);
+    const curFmt = fmtTime(t);
+    const durFmt = isFinite(d) && d > 0 ? fmtTime(d) : null;
+    document.querySelectorAll('#controls .t-cur').forEach(el => {
+      el.textContent = curFmt;
+    });
+    if (durFmt) {
+      document.querySelectorAll('#controls .t-dur').forEach(el => {
+        el.textContent = durFmt;
+      });
     }
   }
 }
 
-els.scrubber.addEventListener('input', () => {
-  state.scrubbing = true;
-  clearTimeout(hideTimer);
-  const d = state.isHls && state.totalDuration > 0 ? state.totalDuration : video.duration;
-  if (!isFinite(d) || d <= 0) return;
-  const t = (els.scrubber.value / 1000) * d;
-  if (!state.isHls) {
-    if (typeof video.fastSeek === 'function') video.fastSeek(t);
-    else video.currentTime = t;
-  }
-  els.tCur.textContent = fmtTime(t);
-  setRangeFill(els.scrubber);
-});
-
-els.scrubber.addEventListener('change', () => {
-  const d = state.isHls && state.totalDuration > 0 ? state.totalDuration : video.duration;
-  if (isFinite(d) && d > 0) {
-    const t = (els.scrubber.value / 1000) * d;
-    if (state.isHls) {
-      seekHls(t);
-    } else {
+document.querySelectorAll('#controls .scrubber').forEach(scrubber => {
+  scrubber.addEventListener('input', () => {
+    state.scrubbing = true;
+    clearTimeout(hideTimer);
+    const d = state.isHls && state.totalDuration > 0 ? state.totalDuration : video.duration;
+    if (!isFinite(d) || d <= 0) return;
+    const val = scrubber.value;
+    document.querySelectorAll('#controls .scrubber').forEach(s => {
+      if (s !== scrubber) s.value = val;
+      setRangeFill(s);
+    });
+    const t = (val / 1000) * d;
+    if (!state.isHls) {
       if (typeof video.fastSeek === 'function') video.fastSeek(t);
       else video.currentTime = t;
     }
-  }
-  state.scrubbing = false;
-  scheduleHide();
+    const curFmt = fmtTime(t);
+    document.querySelectorAll('#controls .t-cur').forEach(el => {
+      el.textContent = curFmt;
+    });
+  });
+
+  scrubber.addEventListener('change', () => {
+    const d = state.isHls && state.totalDuration > 0 ? state.totalDuration : video.duration;
+    if (isFinite(d) && d > 0) {
+      const t = (scrubber.value / 1000) * d;
+      if (state.isHls) {
+        seekHls(t);
+      } else {
+        if (typeof video.fastSeek === 'function') video.fastSeek(t);
+        else video.currentTime = t;
+      }
+    }
+    state.scrubbing = false;
+    scheduleHide();
+  });
 });
 
 // ---------------- Controles visíveis / ocultos ----------------
 let hideTimer = null;
 function setControlsVisible(visible) {
-  if (settingsPill?.isOpen()) {
+  if (settingsPill?.isOpen() && !layoutEditor?.isOpen()) {
     els.controls.classList.add('hidden');
     state.controlsVisible = false;
     return;
@@ -2538,9 +3470,11 @@ function setControlsVisible(visible) {
 
 function scheduleHide() {
   clearTimeout(hideTimer);
+  const autoHideMs = layoutEditor?.currentLayout?.autoHideMs ?? 3500;
+  if (autoHideMs === 0) return; // 0 = Nunca ocultar automaticamente
   hideTimer = setTimeout(() => {
-    if (!video.paused && !sheetOpen() && !settingsPill?.isOpen() && !state.scrubbing) setControlsVisible(false);
-  }, 3500);
+    if (!video.paused && !sheetOpen() && !settingsPill?.isOpen() && !layoutEditor?.isOpen() && !state.scrubbing) setControlsVisible(false);
+  }, autoHideMs);
 }
 
 els.controls.addEventListener('pointerdown', () => scheduleHide(), true);
@@ -2720,11 +3654,13 @@ function setHeadset(on) {
     look.immediateTap = on && !state.unlocked;
   }
   els.player.classList.toggle('headset', on);
-  els.btnHeadset?.classList.toggle('active', on);
+  setHeadsetIcon(on);
 
   if (settingsPill?.isOpen()) {
     settingsPill.render(true);
   }
+
+  layoutEditor?.refreshMode();
 
   if (on) {
     requestGyroOnce();
@@ -2744,6 +3680,7 @@ function setHeadset(on) {
       setControlsVisible(true);
     }
   }
+  updateGazeVisibility();
 }
 
 // ---------------- HUD e Toast ----------------
@@ -2759,7 +3696,10 @@ function hud(text, ms = 1100) {
 
 let toastTimer = null;
 function toast(text, ms = 3200) {
-  els.toast.textContent = text;
+  const tL = $('toast-left');
+  const tR = $('toast-right');
+  if (tL) tL.textContent = text;
+  if (tR) tR.textContent = text;
   els.toast.classList.add('show');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => els.toast.classList.remove('show'), ms);
@@ -2794,10 +3734,25 @@ document.addEventListener('visibilitychange', () => {
 
 window.addEventListener('pagehide', () => {
   try {
+    const d = (state.isHls && state.totalDuration > 0) ? state.totalDuration : video.duration;
+    const t = (state.isHls ? state.hlsOffset : 0) + (video.currentTime || 0);
+    if (isFinite(d) && d > 0 && isFinite(t)) {
+      saveVideoProgress(t, d, true);
+    }
     if (!video.paused) video.pause();
   } catch {}
   releaseWakeLock();
   setAudioSessionType('ambient');
+});
+
+window.addEventListener('beforeunload', () => {
+  if (state.currentVideoItem) {
+    const d = (state.isHls && state.totalDuration > 0) ? state.totalDuration : video.duration;
+    const t = (state.isHls ? state.hlsOffset : 0) + (video.currentTime || 0);
+    if (isFinite(d) && d > 0 && isFinite(t)) {
+      profileManager.saveProgress(state.currentVideoItem, t, d, true);
+    }
+  }
 });
 
 // ---------------- Telas ----------------
@@ -2806,10 +3761,13 @@ function showPlayer() {
   els.player.hidden = false;
   els.player.classList.add('paused');
   setPlayIcon(false);
-  els.tCur.textContent = '0:00';
-  els.tDur.textContent = '0:00';
-  els.scrubber.value = 0;
-  setRangeFill(els.scrubber);
+  lastShownSecond = -1;
+  document.querySelectorAll('#controls .t-cur').forEach(el => el.textContent = '0:00');
+  document.querySelectorAll('#controls .t-dur').forEach(el => el.textContent = '0:00');
+  document.querySelectorAll('#controls .scrubber').forEach(s => {
+    s.value = 0;
+    setRangeFill(s);
+  });
   setHeadset(state.headset);
   vr.resize();
   look.recenter();
@@ -2842,25 +3800,48 @@ function releaseVideo() {
 }
 
 function closePlayer() {
+  const d = (state.isHls && state.totalDuration > 0) ? state.totalDuration : video.duration;
+  const t = (state.isHls ? state.hlsOffset : 0) + (video.currentTime || 0);
+  if (isFinite(d) && d > 0 && isFinite(t)) {
+    saveVideoProgress(t, d, true);
+  }
   closeSheets();
   stopLoop();
   releaseVideo();
   releaseWakeLock();
   setAudioSessionType('ambient');
+  spatialAudio?.configure('none', false);
+  setSpatialAudioIcon(false);
+  updateSpatialAudioBadge(null);
   els.player.hidden = true;
   els.home.hidden = false;
   setHeadset(state.headset);
+  if (cachedPcVideos && cachedPcVideos.length) {
+    renderPcVideos(cachedPcVideos, cachedBaseUrl);
+  }
+  if (state.currentVideoItem) {
+    updateGalleryCardProgress(state.currentVideoItem);
+  }
 }
 
-// ---------------- Servidor no PC & Biblioteca Local ----------------
+// ---------------- Servidor no PC, Organização por Pastas & Gerenciador ----------------
+let activeFolderFilter = 'all';
+let currentGallerySort = 'name-asc';
+const collapsedFolderSet = new Set();
+let cachedPcVideos = [];
+let cachedFolderList = [];
+let cachedBaseUrl = '';
+let galleryControlsInitialized = false;
+
 function renderMonitoredFolders(folders) {
+  cachedFolderList = Array.isArray(folders) ? folders : [];
   if (!els.monitoredFoldersList) return;
   els.monitoredFoldersList.innerHTML = '';
-  if (!folders || !folders.length) {
+  if (!cachedFolderList || !cachedFolderList.length) {
     els.monitoredFoldersList.innerHTML = '<span style="font-size:12px;color:#8e8e93;">Nenhuma pasta configurada</span>';
     return;
   }
-  for (const f of folders) {
+  for (const f of cachedFolderList) {
     const folderPath = typeof f === 'string' ? f : f.path;
     const exists = typeof f === 'object' ? f.exists : true;
     const pill = document.createElement('span');
@@ -2869,35 +3850,200 @@ function renderMonitoredFolders(folders) {
     pill.title = exists ? folderPath : `${folderPath} (pasta não encontrada no disco)`;
 
     const baseName = folderPath.replace(/[/\\]+$/, '').split(/[/\\]/).pop() || folderPath;
-    pill.innerHTML = `📁 <b>${baseName}</b> <span style="font-size:10px;opacity:0.7;">(${folderPath})</span>`;
+    pill.innerHTML = `📁 <b>${baseName}</b>`;
 
-    if (isElectron && window.electronAPI.removeLibraryFolder) {
-      const delBtn = document.createElement('button');
-      delBtn.innerHTML = '×';
-      delBtn.style.cssText = 'background:none;border:none;color:#ff453a;font-size:14px;cursor:pointer;margin-left:4px;line-height:1;padding:0 2px;';
-      delBtn.title = 'Remover esta pasta do VR Player';
-      delBtn.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        const updated = await window.electronAPI.removeLibraryFolder(folderPath);
-        if (updated) renderElectronLibrary(updated);
-      });
-      pill.appendChild(delBtn);
-    }
+    const delBtn = document.createElement('button');
+    delBtn.innerHTML = '×';
+    delBtn.style.cssText = 'background:none;border:none;color:#ff453a;font-size:15px;cursor:pointer;margin-left:4px;line-height:1;padding:0 2px;';
+    delBtn.title = `Remover pasta "${baseName}" do VR Player`;
+    delBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await confirmAndRemoveFolder(folderPath, baseName);
+    });
+    pill.appendChild(delBtn);
 
-    if (isElectron && window.electronAPI.openFolderInExplorer) {
-      pill.style.cursor = 'pointer';
-      pill.addEventListener('click', () => {
+    pill.style.cursor = 'pointer';
+    pill.addEventListener('click', (e) => {
+      if (e.target === delBtn) return;
+      if (isElectron && window.electronAPI.openFolderInExplorer) {
         window.electronAPI.openFolderInExplorer(folderPath);
-      });
-    }
+      } else {
+        setFolderFilter(baseName);
+      }
+    });
 
     els.monitoredFoldersList.appendChild(pill);
+  }
+}
+
+async function confirmAndRemoveFolder(folderPath, folderName) {
+  const name = folderName || folderPath.replace(/[/\\]+$/, '').split(/[/\\]/).pop() || folderPath;
+  const ok = confirm(`Deseja remover a pasta "${name}" da biblioteca do VR Player?\n\nImportante: Seus arquivos de vídeo no disco continuarão intactos, apenas o atalho será desvinculado.`);
+  if (!ok) return;
+
+  if (isElectron && window.electronAPI.removeLibraryFolder) {
+    const updated = await window.electronAPI.removeLibraryFolder(folderPath);
+    if (updated) {
+      renderElectronLibrary(updated);
+      renderManageFoldersModalList();
+      toast(`Pasta "${name}" removida da biblioteca.`);
+    }
+  } else {
+    const serverUrl = getCurrentServerUrl();
+    if (!serverUrl) {
+      toast('Conecte-se ao servidor primeiro.');
+      return;
+    }
+    try {
+      const res = await fetch(`${serverUrl}/api/folders`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folder: folderPath }),
+      });
+      if (res.ok) {
+        toast(`Pasta "${name}" removida da biblioteca.`);
+        await connectServer(serverUrl, true);
+        renderManageFoldersModalList();
+      } else {
+        toast('Não foi possível remover a pasta.');
+      }
+    } catch {
+      toast('Erro de comunicação com o servidor.');
+    }
+  }
+}
+
+async function addMonitoredFolder(folderPath) {
+  const pathVal = (folderPath || '').trim();
+  if (!pathVal) {
+    toast('Digite o caminho da pasta.');
+    return;
+  }
+
+  if (isElectron && window.electronAPI.addLibraryFolder) {
+    const res = await window.electronAPI.addLibraryFolder(pathVal);
+    if (res) {
+      renderElectronLibrary(res);
+      renderManageFoldersModalList();
+      toast(`Pasta adicionada! ${res.videos.length} vídeo(s) encontrado(s).`);
+      if (els.inputNewFolderPath) els.inputNewFolderPath.value = '';
+    }
+  } else {
+    const serverUrl = getCurrentServerUrl();
+    if (!serverUrl) {
+      toast('Conecte-se ao servidor primeiro.');
+      return;
+    }
+    try {
+      const res = await fetch(`${serverUrl}/api/folders`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folder: pathVal }),
+      });
+      if (res.ok) {
+        toast('Pasta adicionada! Atualizando...');
+        await connectServer(serverUrl, true);
+        renderManageFoldersModalList();
+        if (els.inputNewFolderPath) els.inputNewFolderPath.value = '';
+      } else {
+        toast('Não foi possível adicionar a pasta.');
+      }
+    } catch {
+      toast('Erro ao comunicar com o servidor.');
+    }
+  }
+}
+
+function openManageFoldersModal() {
+  if (!els.sheetManageFolders) return;
+  if (isElectron) {
+    if (els.btnBrowseFolder) els.btnBrowseFolder.style.display = 'inline-block';
+    if (els.manageBrowseTip) els.manageBrowseTip.style.display = 'block';
+  } else {
+    if (els.btnBrowseFolder) els.btnBrowseFolder.style.display = 'none';
+    if (els.manageBrowseTip) els.manageBrowseTip.style.display = 'none';
+  }
+  renderManageFoldersModalList();
+  openSheet(els.sheetManageFolders);
+}
+
+async function renderManageFoldersModalList() {
+  const container = els.manageFoldersItems;
+  if (!container) return;
+  container.innerHTML = '<div style="text-align:center;padding:12px;color:var(--label2);">Carregando pastas...</div>';
+
+  let folderData = [];
+  if (isElectron && window.electronAPI.getLibrary) {
+    try {
+      const lib = await window.electronAPI.getLibrary();
+      folderData = lib.folders || [];
+    } catch {
+      folderData = cachedFolderList;
+    }
+  } else {
+    const serverUrl = getCurrentServerUrl();
+    if (serverUrl) {
+      try {
+        const res = await fetch(`${serverUrl}/api/folders`);
+        if (res.ok) {
+          const d = await res.json();
+          folderData = d.folders || [];
+        }
+      } catch {
+        folderData = cachedFolderList;
+      }
+    } else {
+      folderData = cachedFolderList;
+    }
+  }
+
+  cachedFolderList = folderData;
+  if (els.manageFoldersCount) els.manageFoldersCount.textContent = folderData.length;
+
+  if (!folderData || folderData.length === 0) {
+    container.innerHTML = '<div style="padding:14px;color:var(--label2);text-align:center;background:var(--bg3);border-radius:12px;">Nenhuma pasta configurada no momento.</div>';
+    return;
+  }
+
+  container.innerHTML = '';
+  for (const f of folderData) {
+    const folderPath = typeof f === 'string' ? f : f.path;
+    const exists = typeof f === 'object' ? f.exists : true;
+    const baseName = folderPath.replace(/[/\\]+$/, '').split(/[/\\]/).pop() || folderPath;
+
+    const card = document.createElement('div');
+    card.className = `manage-folder-card ${!exists ? 'missing' : ''}`;
+    card.innerHTML = `
+      <div class="manage-folder-info">
+        <div class="manage-folder-top">
+          <span style="font-size:16px;">📁</span>
+          <strong class="manage-folder-name">${baseName}</strong>
+          <span class="manage-folder-status ${exists ? 'ok' : 'warn'}">${exists ? 'Acessível' : 'Inacessível / Não encontrada'}</span>
+        </div>
+        <div class="manage-folder-path">${folderPath}</div>
+      </div>
+      <div class="manage-folder-actions">
+        ${isElectron && exists ? '<button class="btn-folder-open" title="Abrir pasta no Windows Explorer">📂 Explorer</button>' : ''}
+        <button class="btn-folder-del" title="Remover da biblioteca">🗑️ Remover</button>
+      </div>
+    `;
+
+    card.querySelector('.btn-folder-open')?.addEventListener('click', () => {
+      window.electronAPI?.openFolderInExplorer?.(folderPath);
+    });
+
+    card.querySelector('.btn-folder-del')?.addEventListener('click', async () => {
+      await confirmAndRemoveFolder(folderPath, baseName);
+    });
+
+    container.appendChild(card);
   }
 }
 
 async function loadElectronLibrary() {
   if (!isElectron || !window.electronAPI.getLibrary) return;
   try {
+    await syncProfilesWithBackend('');
     const data = await window.electronAPI.getLibrary();
     renderElectronLibrary(data);
   } catch (err) {
@@ -2934,11 +4080,15 @@ async function connectServer(rawUrl, silent = false) {
     const folderList = data.folders || (data.folder ? [data.folder] : []);
     renderMonitoredFolders(folderList);
     renderPcVideos(data.videos || [], url);
+    syncProfilesWithBackend(url).then(() => {
+      renderPcVideos(cachedPcVideos, cachedBaseUrl);
+    });
     if (!silent) toast(`Conectado! ${data.count} vídeo(s) encontrado(s).`);
   } catch (err) {
     els.btnConnectServer.textContent = 'Conectar';
     els.btnConnectServer.classList.remove('connected');
     els.pcVideoList.hidden = true;
+    if (els.pcGalleryToolbar) els.pcGalleryToolbar.hidden = true;
     if (!silent) {
       toast('Não foi possível conectar. Verifique o IP/domínio, porta e o certificado HTTPS.');
     }
@@ -2974,6 +4124,9 @@ async function discoverAndConnectServer(silent = false) {
         const folderList = data.folders || (data.folder ? [data.folder] : []);
         renderMonitoredFolders(folderList);
         renderPcVideos(data.videos || [], candidate);
+        syncProfilesWithBackend(candidate).then(() => {
+          renderPcVideos(cachedPcVideos, cachedBaseUrl);
+        });
         if (!silent) toast(`✅ Conectado automaticamente ao servidor (${data.count} vídeos)!`);
         return true;
       }
@@ -2987,82 +4140,347 @@ async function discoverAndConnectServer(silent = false) {
   return false;
 }
 
+function setFolderFilter(filterKey) {
+  activeFolderFilter = filterKey;
+  renderPcVideos(cachedPcVideos, cachedBaseUrl);
+}
+
+function updateToggleAllLabel() {
+  if (!els.toggleAllLabel) return;
+  const sections = document.querySelectorAll('.folder-section');
+  if (sections.length === 0) return;
+  const anyOpen = Array.from(sections).some((s) => !s.classList.contains('collapsed'));
+  els.toggleAllLabel.textContent = anyOpen ? 'Recolher Todas' : 'Expandir Todas';
+}
+
+function createVideoCardElement(v, baseUrl) {
+  const card = document.createElement('div');
+  card.className = 'video-card';
+
+  const hint = v.formatHint || {};
+  let iconLabel = 'VR';
+  let iconColor = '#0a84ff';
+  if (hint.projection === '360') { iconLabel = '360°'; iconColor = '#0a84ff'; }
+  else if (hint.projection === '180') { iconLabel = 'VR180'; iconColor = '#5e5ce6'; }
+  else if (hint.projection === 'fisheye') { iconLabel = 'Olho de Peixe'; iconColor = '#ff9f0a'; }
+  else if (hint.layout === 'sbs' || hint.layout === 'tb') { iconLabel = '3D SBS'; iconColor = '#30d158'; }
+  else if (hint.projection === 'flat') { iconLabel = 'Plano'; iconColor = '#64d2ff'; }
+
+  const vKey = generateVideoKey(v.name, v.sizeBytes || 0);
+  const allProfiles = getLocalProfiles();
+  const profItem = allProfiles[vKey] || null;
+  const savedProg = store.get(`prog:${v.name}:${v.sizeBytes || 0}`, null);
+
+  if (profItem?.profile?.projection) {
+    const p = profItem.profile.projection;
+    if (p === '360') { iconLabel = '360°'; iconColor = '#0a84ff'; }
+    else if (p === '180') { iconLabel = 'VR180'; iconColor = '#5e5ce6'; }
+    else if (p === 'fisheye') { iconLabel = 'Olho de Peixe'; iconColor = '#ff9f0a'; }
+    else if (p === 'flat') { iconLabel = 'Plano'; iconColor = '#64d2ff'; }
+  }
+
+  const isHls = v.streamType === 'hls' || v.url?.includes('.m3u8');
+  let streamBadge = '';
+  if (isHls) {
+    if (v.needsDownscale) {
+      streamBadge = '<span class="video-card-stream-badge badge-orange" style="background:rgba(255,159,10,0.2);color:#ff9f0a;">8K➔4K HLS</span>';
+    } else {
+      streamBadge = '<span class="video-card-stream-badge badge-purple" style="background:rgba(191,90,242,0.2);color:#bf5af2;">HLS GPU</span>';
+    }
+  } else {
+    streamBadge = '<span class="video-card-stream-badge badge-green" style="background:rgba(48,209,88,0.2);color:#30d158;">Direto</span>';
+  }
+
+  const resBadge = v.resolutionBadge ? `<span class="badge-res ${v.resolutionBadge === '8K' ? 'res-8k' : ''}">${v.resolutionBadge}</span>` : '';
+  const durBadge = v.durationFormatted ? `<span class="badge-duration">${v.durationFormatted}</span>` : '';
+  const thumbSrc = v.thumbUrl ? `${baseUrl}${v.thumbUrl}` : '';
+
+  const subfolderBadge = v.subfolder ? `<span class="badge-subfolder" title="Subpasta: ${v.subfolder}">📁 ${v.subfolder}</span>` : '';
+
+  const progTime = (profItem && typeof profItem.currentTime === 'number') ? profItem.currentTime : (savedProg?.time || 0);
+  const progDur = (profItem && typeof profItem.duration === 'number') ? profItem.duration : (savedProg?.duration || v.duration || 0);
+  const isCompleted = profItem ? !!profItem.completed : (savedProg ? (!!savedProg.completed || (progDur > 0 && (progTime / progDur) >= 0.92)) : false);
+
+  let progressBarHtml = '';
+  let statusBadgeHtml = '';
+
+  if (isCompleted || (progTime && progTime > 4)) {
+    const totalD = progDur || 1;
+    const pct = isCompleted ? 100 : Math.min(100, Math.max(0, Math.round((progTime / totalD) * 100)));
+
+    progressBarHtml = `
+      <div class="video-card-progress-bar">
+        <div class="video-card-progress-fill ${isCompleted ? 'completed' : ''}" style="width:${pct}%"></div>
+      </div>
+    `;
+
+    if (isCompleted) {
+      statusBadgeHtml = `<span class="badge-status-completed" title="Vídeo concluído">✓ Assistido</span>`;
+    } else if (pct > 0) {
+      statusBadgeHtml = `<span class="badge-status-progress" title="Progresso: ${fmtTime(progTime)}">⏱ ${fmtTime(progTime)}</span>`;
+    }
+  }
+
+  const cardProgressOverlay = renderCardProgressOverlay(v);
+
+  card.dataset.videoKey = vKey;
+  card.dataset.videoItemKey = profileManager.getVideoKey(v);
+
+  card.innerHTML = `
+    <div class="video-card-thumb-wrap video-card-thumb-wrapper">
+      <img class="video-card-thumb" src="${thumbSrc}" alt="${v.name}" loading="lazy" onload="this.classList.add('loaded')" onerror="this.style.display='none'">
+      <div class="video-thumb-shimmer"></div>
+      <div class="video-card-badges">
+        <span class="badge-format" style="background:${iconColor}cc">${iconLabel}</span>
+        ${resBadge}
+        ${!cardProgressOverlay ? statusBadgeHtml : ''}
+      </div>
+      ${durBadge}
+      <div class="video-card-progress-slot" style="display:contents;">
+        ${cardProgressOverlay || progressBarHtml}
+      </div>
+    </div>
+    <div class="video-card-info">
+      <strong class="video-card-title" title="${v.name}">${v.name}</strong>
+      <div class="video-card-meta">
+        <span>${v.size}</span>
+        <div style="display:flex;align-items:center;gap:4px;">
+          ${subfolderBadge}
+          ${streamBadge}
+        </div>
+      </div>
+    </div>
+  `;
+
+  card.addEventListener('click', () => {
+    const fullUrl = `${baseUrl}${v.url}`;
+    if (isHls) {
+      hud(v.needsDownscale ? 'Transcodificando 8K ➔ 4K HLS...' : 'Iniciando HLS Dinâmico...');
+    }
+    openVideoSource({
+      url: fullUrl,
+      name: v.name,
+      size: v.sizeBytes,
+      isBlob: false,
+      duration: v.duration || 0,
+      isHls,
+      relPath: v.relPath,
+      baseUrl,
+      audioSpatial: v.audioSpatial || { spatialType: v.audioSpatialType || 'none' },
+    });
+  });
+
+  return card;
+}
+
+function initGalleryControlsOnce() {
+  if (galleryControlsInitialized) return;
+  galleryControlsInitialized = true;
+
+  els.gallerySortSelect?.addEventListener('change', (e) => {
+    currentGallerySort = e.target.value;
+    renderPcVideos(cachedPcVideos, cachedBaseUrl);
+  });
+
+  els.btnToggleAllFolders?.addEventListener('click', () => {
+    const sections = document.querySelectorAll('.folder-section');
+    const anyOpen = Array.from(sections).some((s) => !s.classList.contains('collapsed'));
+    for (const s of sections) {
+      const name = s.dataset.folderName;
+      if (anyOpen) {
+        collapsedFolderSet.add(name);
+        s.classList.add('collapsed');
+      } else {
+        collapsedFolderSet.delete(name);
+        s.classList.remove('collapsed');
+      }
+    }
+    updateToggleAllLabel();
+  });
+
+  els.btnManageFolders?.addEventListener('click', openManageFoldersModal);
+
+  els.btnConfirmAddFolder?.addEventListener('click', () => {
+    addMonitoredFolder(els.inputNewFolderPath?.value);
+  });
+
+  els.inputNewFolderPath?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') addMonitoredFolder(els.inputNewFolderPath?.value);
+  });
+
+  els.btnBrowseFolder?.addEventListener('click', async () => {
+    if (window.electronAPI?.addLibraryFolder) {
+      const res = await window.electronAPI.addLibraryFolder();
+      if (res) {
+        renderElectronLibrary(res);
+        renderManageFoldersModalList();
+        toast(`Pasta adicionada! ${res.videos.length} vídeo(s) encontrado(s).`);
+      }
+    }
+  });
+
+  els.btnRefreshFolderList?.addEventListener('click', () => {
+    renderManageFoldersModalList();
+    if (isElectron && window.electronAPI.rescanLibrary) {
+      window.electronAPI.rescanLibrary().then((res) => {
+        if (res) renderElectronLibrary(res);
+      });
+    } else {
+      const sUrl = getCurrentServerUrl();
+      if (sUrl) connectServer(sUrl, true);
+    }
+  });
+}
+
 function renderPcVideos(videos, baseUrl) {
+  cachedPcVideos = videos || [];
+  cachedBaseUrl = baseUrl || '';
+  initGalleryControlsOnce();
+
   const container = els.pcVideoList;
+  if (!container) return;
   container.innerHTML = '';
-  if (!videos || videos.length === 0) {
-    container.innerHTML = '<div class="list-item" style="grid-column:1/-1;border-radius:12px;"><div class="list-text"><small>Nenhum vídeo encontrado na pasta do PC.</small></div></div>';
+
+  if (!cachedPcVideos || cachedPcVideos.length === 0) {
+    if (els.pcGalleryToolbar) els.pcGalleryToolbar.hidden = true;
+    container.innerHTML = '<div class="list-item" style="border-radius:12px;background:var(--bg2);padding:18px;text-align:center;"><div class="list-text"><small style="font-size:13px;color:var(--label2);">Nenhum vídeo encontrado nas pastas monitoradas.</small></div></div>';
     container.hidden = false;
     return;
   }
 
-  for (const v of videos) {
-    const card = document.createElement('div');
-    card.className = 'video-card';
-
-    const hint = v.formatHint || {};
-    let iconLabel = 'VR';
-    let iconColor = '#0a84ff';
-    if (hint.projection === '360') { iconLabel = '360°'; iconColor = '#0a84ff'; }
-    else if (hint.projection === '180') { iconLabel = 'VR180'; iconColor = '#5e5ce6'; }
-    else if (hint.projection === 'fisheye') { iconLabel = 'Olho de Peixe'; iconColor = '#ff9f0a'; }
-    else if (hint.layout === 'sbs' || hint.layout === 'tb') { iconLabel = '3D SBS'; iconColor = '#30d158'; }
-    else if (hint.projection === 'flat') { iconLabel = 'Plano'; iconColor = '#64d2ff'; }
-
-    const isHls = v.streamType === 'hls' || v.url?.includes('.m3u8');
-    let streamBadge = '';
-    if (isHls) {
-      if (v.needsDownscale) {
-        streamBadge = '<span class="video-card-stream-badge badge-orange" style="background:rgba(255,159,10,0.2);color:#ff9f0a;">8K➔4K HLS</span>';
-      } else {
-        streamBadge = '<span class="video-card-stream-badge badge-purple" style="background:rgba(191,90,242,0.2);color:#bf5af2;">HLS GPU</span>';
-      }
-    } else {
-      streamBadge = '<span class="video-card-stream-badge badge-green" style="background:rgba(48,209,88,0.2);color:#30d158;">Direto</span>';
+  // Estatísticas de cada pasta
+  const folderStatsMap = new Map();
+  for (const v of cachedPcVideos) {
+    let fName = v.folderName;
+    if (!fName && v.relPath && v.relPath.includes('/')) {
+      fName = v.relPath.split('/')[0];
     }
+    fName = fName || 'Principal';
+    const cur = folderStatsMap.get(fName) || { name: fName, count: 0, root: v.folderRoot || '' };
+    cur.count++;
+    if (!cur.root && v.folderRoot) cur.root = v.folderRoot;
+    folderStatsMap.set(fName, cur);
+  }
 
-    const resBadge = v.resolutionBadge ? `<span class="badge-res ${v.resolutionBadge === '8K' ? 'res-8k' : ''}">${v.resolutionBadge}</span>` : '';
-    const durBadge = v.durationFormatted ? `<span class="badge-duration">${v.durationFormatted}</span>` : '';
-    const thumbSrc = v.thumbUrl ? `${baseUrl}${v.thumbUrl}` : '';
+  // Renderiza a barra de ferramentas e filtros por pasta
+  if (els.pcGalleryToolbar) {
+    els.pcGalleryToolbar.hidden = false;
+    if (els.folderFilterChips) {
+      els.folderFilterChips.innerHTML = '';
 
-    card.innerHTML = `
-      <div class="video-card-thumb-wrap">
-        <img class="video-card-thumb" src="${thumbSrc}" alt="${v.name}" loading="lazy" onload="this.classList.add('loaded')" onerror="this.style.display='none'">
-        <div class="video-thumb-shimmer"></div>
-        <div class="video-card-badges">
-          <span class="badge-format" style="background:${iconColor}cc">${iconLabel}</span>
-          ${resBadge}
+      // Chip "Todas"
+      const allChip = document.createElement('button');
+      allChip.className = `folder-chip ${activeFolderFilter === 'all' ? 'active' : ''}`;
+      allChip.innerHTML = `Todas <span class="chip-count">${cachedPcVideos.length}</span>`;
+      allChip.addEventListener('click', () => setFolderFilter('all'));
+      els.folderFilterChips.appendChild(allChip);
+
+      // Chips para cada pasta monitorada
+      for (const [name, stats] of folderStatsMap.entries()) {
+        const chip = document.createElement('button');
+        chip.className = `folder-chip ${activeFolderFilter === name ? 'active' : ''}`;
+        chip.innerHTML = `📁 ${name} <span class="chip-count">${stats.count}</span>`;
+        chip.addEventListener('click', () => setFolderFilter(name));
+        els.folderFilterChips.appendChild(chip);
+      }
+    }
+  }
+
+  // Filtra vídeos se uma pasta específica estiver selecionada
+  let filteredVideos = [...cachedPcVideos];
+  if (activeFolderFilter !== 'all') {
+    filteredVideos = filteredVideos.filter((v) => {
+      const fName = v.folderName || (v.relPath && v.relPath.includes('/') ? v.relPath.split('/')[0] : 'Principal');
+      return fName === activeFolderFilter;
+    });
+  }
+
+  // Ordena os vídeos de acordo com a seleção atual
+  filteredVideos.sort((a, b) => {
+    if (currentGallerySort === 'name-asc') return (a.name || '').localeCompare(b.name || '', undefined, { numeric: true });
+    if (currentGallerySort === 'name-desc') return (b.name || '').localeCompare(a.name || '', undefined, { numeric: true });
+    if (currentGallerySort === 'recent') return (b.mtime || 0) - (a.mtime || 0);
+    if (currentGallerySort === 'size-desc') return (b.sizeBytes || 0) - (a.sizeBytes || 0);
+    if (currentGallerySort === 'size-asc') return (a.sizeBytes || 0) - (b.sizeBytes || 0);
+    return 0;
+  });
+  currentPlaylist = filteredVideos;
+
+  // Agrupa os vídeos filtrados por Pasta
+  const groupsMap = new Map();
+  for (const v of filteredVideos) {
+    let fName = v.folderName;
+    if (!fName && v.relPath && v.relPath.includes('/')) {
+      fName = v.relPath.split('/')[0];
+    }
+    fName = fName || 'Principal';
+    if (!groupsMap.has(fName)) {
+      groupsMap.set(fName, { name: fName, root: v.folderRoot || '', videos: [] });
+    }
+    groupsMap.get(fName).videos.push(v);
+  }
+
+  if (groupsMap.size === 0) {
+    container.innerHTML = '<div style="padding:18px;text-align:center;color:var(--label2);background:var(--bg2);border-radius:12px;">Nenhum vídeo encontrado nesta pasta.</div>';
+    container.hidden = false;
+    return;
+  }
+
+  // Renderiza cada Seção de Pasta
+  for (const [folderName, group] of groupsMap.entries()) {
+    const isCollapsed = collapsedFolderSet.has(folderName);
+    const section = document.createElement('div');
+    section.className = `folder-section ${isCollapsed ? 'collapsed' : ''}`;
+    section.dataset.folderName = folderName;
+
+    const pathSub = group.root ? `<span class="folder-path-sub" title="${group.root}">(${group.root})</span>` : '';
+
+    section.innerHTML = `
+      <div class="folder-section-header">
+        <div class="folder-header-title">
+          <button class="btn-toggle-section" title="Recolher / Expandir pasta">▼</button>
+          <span class="folder-icon">📁</span>
+          <span class="folder-title-name">${folderName}</span>
+          <span class="folder-count-badge">${group.videos.length} ${group.videos.length === 1 ? 'vídeo' : 'vídeos'}</span>
+          ${pathSub}
         </div>
-        ${durBadge}
-      </div>
-      <div class="video-card-info">
-        <strong class="video-card-title" title="${v.name}">${v.name}</strong>
-        <div class="video-card-meta">
-          <span>${v.size}</span>
-          ${streamBadge}
+        <div class="folder-header-actions">
+          ${isElectron && group.root ? '<button class="server-pill btn-section-explorer" style="cursor:pointer;font-size:11px;">📂 Abrir</button>' : ''}
         </div>
       </div>
+      <div class="folder-section-body video-gallery-grid"></div>
     `;
 
-    card.addEventListener('click', () => {
-      const fullUrl = `${baseUrl}${v.url}`;
-      if (isHls) {
-        hud(v.needsDownscale ? 'Transcodificando 8K ➔ 4K HLS...' : 'Iniciando HLS Dinâmico...');
+    section.querySelector('.btn-section-explorer')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (group.root && window.electronAPI?.openFolderInExplorer) {
+        window.electronAPI.openFolderInExplorer(group.root);
       }
-      openVideoSource({
-        url: fullUrl,
-        name: v.name,
-        size: v.sizeBytes,
-        isBlob: false,
-        duration: v.duration || 0,
-        isHls,
-        relPath: v.relPath,
-        baseUrl,
-      });
     });
 
-    container.appendChild(card);
+    const header = section.querySelector('.folder-section-header');
+    header.addEventListener('click', (e) => {
+      if (e.target.closest('.folder-header-actions')) return;
+      if (collapsedFolderSet.has(folderName)) {
+        collapsedFolderSet.delete(folderName);
+        section.classList.remove('collapsed');
+      } else {
+        collapsedFolderSet.add(folderName);
+        section.classList.add('collapsed');
+      }
+      updateToggleAllLabel();
+    });
+
+    const grid = section.querySelector('.folder-section-body');
+    for (const v of group.videos) {
+      const card = createVideoCardElement(v, baseUrl);
+      grid.appendChild(card);
+    }
+
+    container.appendChild(section);
   }
+
+  updateToggleAllLabel();
   container.hidden = false;
 }
 
@@ -3575,12 +4993,18 @@ function renderCloudHistory() {
     if (item.service === 'torbox') { serviceTagClass = 'tag-torbox'; serviceLabel = 'Torbox'; }
     else if (item.service === 'gofile') { serviceTagClass = 'tag-gofile'; serviceLabel = 'Gofile'; }
 
+    card.dataset.videoItemKey = profileManager.getVideoKey(item);
+    const cloudProgressOverlay = renderCardProgressOverlay(item);
+
     card.innerHTML = `
-      <div class="video-card-thumb-wrap" style="display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#1c1c1e,#2c2c2e);">
+      <div class="video-card-thumb-wrap video-card-thumb-wrapper" style="display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#1c1c1e,#2c2c2e);">
         <svg style="width:42px;height:42px;color:rgba(255,255,255,0.4);"><use href="#i-cloud"/></svg>
         <div class="video-card-badges">
           <span class="badge-format" style="background:${iconColor}cc">${iconLabel}</span>
           <span class="cloud-tag ${serviceTagClass}">${serviceLabel}</span>
+        </div>
+        <div class="video-card-progress-slot" style="display:contents;">
+          ${cloudProgressOverlay}
         </div>
       </div>
       <div class="video-card-info">
@@ -3748,31 +5172,9 @@ function setupDesktop() {
       }
     });
   } else {
-    // Modo Web: Botão de adicionar pasta via prompt para o servidor local
-    els.btnAddFolder?.addEventListener('click', async () => {
-      const serverUrl = getCurrentServerUrl();
-      if (!serverUrl) {
-        toast('Conecte-se ao servidor do computador primeiro.');
-        return;
-      }
-      const folderPath = prompt('Digite o caminho absoluto da pasta no PC (ex: E:\\MeusVR ou D:\\Videos):');
-      if (folderPath && folderPath.trim()) {
-        try {
-          const res = await fetch(`${serverUrl}/api/folders`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ folder: folderPath.trim() }),
-          });
-          if (res.ok) {
-            toast('Pasta adicionada! Atualizando...');
-            connectServer(serverUrl, true);
-          } else {
-            toast('Não foi possível adicionar a pasta.');
-          }
-        } catch {
-          toast('Erro ao comunicar com o servidor.');
-        }
-      }
+    // Modo Web: Botão de adicionar pasta abre o modal Gerenciar Pastas
+    els.btnAddFolder?.addEventListener('click', () => {
+      openManageFoldersModal();
     });
 
     els.btnRescanFolders?.addEventListener('click', () => {
@@ -3788,21 +5190,9 @@ function setupDesktop() {
 
   // Zoom no FOV via scroll do mouse
   $('stage')?.addEventListener('wheel', (e) => {
-    if (state.headset) return;
     e.preventDefault();
     const delta = e.deltaY > 0 ? 3 : -3;
-    if (vr) {
-      vr.viewFov = clamp(vr.viewFov + delta, 30, 110);
-      state.desktopView.fov = vr.viewFov;
-      const fovSlider = $('sl-view-fov');
-      if (fovSlider) {
-        fovSlider.value = vr.viewFov;
-        const valEl = $('sl-view-fov-val');
-        if (valEl) valEl.textContent = Math.round(vr.viewFov) + '°';
-        setRangeFill(fovSlider);
-      }
-      saveSettings();
-    }
+    adjustZoom(delta, true);
   }, { passive: false });
 
   // Arrastar e soltar arquivos (Drag & Drop)
@@ -3840,6 +5230,8 @@ function setupDesktop() {
   window.addEventListener('keydown', (e) => {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
 
+    if (layoutEditor?.handleKey(e)) return;
+
     if (e.code === 'Space' || e.code === 'Enter' || e.code === 'NumpadEnter' || e.key === 'MediaPlayPause') {
       e.preventDefault();
       togglePlay();
@@ -3861,34 +5253,77 @@ function setupDesktop() {
       hud(state.headset ? 'Modo Óculos' : 'Modo Tela');
     } else if (e.code === 'ArrowUp') {
       e.preventDefault();
-      video.volume = clamp(video.volume + 0.05, 0, 1);
-      hud(`Volume ${Math.round(video.volume * 100)}%`);
+      if (e.altKey) {
+        look?.adjustPitchOffset(4 * (Math.PI / 180));
+        hud(`Inclinação: ${look?.getPitchOffsetDeg()}°`);
+      } else if (video.volume < 0.98) {
+        video.volume = clamp(video.volume + 0.05, 0, 1);
+        hud(`Volume ${Math.round(video.volume * 100)}%`);
+      } else {
+        ensureAudioContextResumed();
+        const newBoost = clamp(getAudioGain() + 0.1, 1.0, 3.0);
+        setAudioGain(newBoost);
+        hud(newBoost <= 1.01 ? 'Volume 100%' : `Volume Boost ${Math.round(newBoost * 100)}% ⚡`);
+      }
     } else if (e.code === 'ArrowDown') {
       e.preventDefault();
-      video.volume = clamp(video.volume - 0.05, 0, 1);
-      hud(`Volume ${Math.round(video.volume * 100)}%`);
+      if (e.altKey) {
+        look?.adjustPitchOffset(-4 * (Math.PI / 180));
+        hud(`Inclinação: ${look?.getPitchOffsetDeg()}°`);
+      } else if (getAudioGain() > 1.05) {
+        const newBoost = clamp(getAudioGain() - 0.1, 1.0, 3.0);
+        setAudioGain(newBoost);
+        hud(newBoost <= 1.01 ? 'Volume 100%' : `Volume Boost ${Math.round(newBoost * 100)}% ⚡`);
+      } else {
+        setAudioGain(1.0);
+        video.volume = clamp(video.volume - 0.05, 0, 1);
+        hud(`Volume ${Math.round(video.volume * 100)}%`);
+      }
+    } else if (e.code === 'KeyN' || (e.shiftKey && e.code === 'KeyN')) {
+      e.preventDefault();
+      playNextVideo();
+    } else if ((e.shiftKey && e.code === 'KeyP') || (e.code === 'KeyV' && e.shiftKey)) {
+      e.preventDefault();
+      playPrevVideo();
+    } else if (e.code === 'KeyB') {
+      e.preventDefault();
+      if (e.shiftKey || e.ctrlKey) {
+        openBookmarksSheet();
+      } else {
+        addCurrentBookmark();
+      }
+    } else if (e.code === 'Equal' || e.code === 'NumpadAdd' || (e.code === 'KeyZ' && !e.ctrlKey && !e.metaKey)) {
+      e.preventDefault();
+      adjustZoomByStep(1);
+    } else if (e.code === 'Minus' || e.code === 'NumpadSubtract' || (e.code === 'KeyX' && !e.ctrlKey && !e.metaKey && !settingsPill?.isOpen())) {
+      e.preventDefault();
+      adjustZoomByStep(-1);
+    } else if (e.code === 'KeyP') {
+      e.preventDefault();
+      cyclePreset(1);
     } else if (e.code === 'KeyM') {
       e.preventDefault();
       video.muted = !video.muted;
-      els.btnMute.querySelector('use').setAttribute('href', video.muted ? '#i-muted' : '#i-speaker');
+      setMuteIcon(video.muted);
       hud(video.muted ? 'Mudo' : `Volume ${Math.round(video.volume * 100)}%`);
     } else if (e.code === 'KeyF' || e.code === 'F11') {
       e.preventDefault();
-      if (isElectron) {
-        window.electronAPI.toggleFullScreen();
-      } else {
-        if (!document.fullscreenElement) {
-          document.documentElement.requestFullscreen?.().catch(() => {});
-        } else {
-          document.exitFullscreen?.().catch(() => {});
-        }
-      }
+      toggleFullScreen();
     } else if (e.code === 'KeyO' || e.code === 'KeyS') {
       e.preventDefault();
       settingsPill.toggle();
     } else if (e.code === 'KeyD') {
       e.preventDefault();
       toggleTelemetry();
+    } else if (e.code === 'KeyA') {
+      e.preventDefault();
+      toggleSpatialAudio();
+    } else if (e.code === 'KeyE') {
+      e.preventDefault();
+      const eyes = ['both', 'right', 'left'];
+      const curIdx = eyes.indexOf(state.dominantEye);
+      const nextEye = eyes[(curIdx + 1) % eyes.length];
+      setDominantEye(nextEye, true);
     } else if (e.code === 'Escape' || e.code === 'Backspace') {
       if (sheetOpen()) {
         closeSheets();
@@ -3901,6 +5336,8 @@ function setupDesktop() {
 
 // ---------------- Inicialização ----------------
 (function init() {
+  profileManager.syncFromServer().catch(() => {});
+
   const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) ||
     (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
   const standalone = navigator.standalone || window.matchMedia('(display-mode: standalone)').matches;
@@ -3912,9 +5349,11 @@ function setupDesktop() {
   setupDesktop();
   initGamepad();
   setupCloudUI();
+  setDominantEye(state.dominantEye, false);
   if (state.headset) {
     setHeadset(true);
   }
+  layoutEditor?.refreshMode();
 
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
     navigator.serviceWorker.register('sw.js').catch(() => {});

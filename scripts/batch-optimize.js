@@ -6,18 +6,11 @@ import fs from 'fs';
 import path from 'path';
 import { spawn, execFile } from 'child_process';
 import { getBinaryPath, setupBinaryEnv } from './bin-paths.js';
+import { formatBytes } from '../js/utils/format.js';
 
-// Injeta binários embutidos no PATH de execução
 setupBinaryEnv();
 
 const VIDEO_EXTS = new Set(['.mp4', '.mkv', '.webm', '.mov', '.m4v', '.avi', '.ts', '.m2ts', '.wmv', '.flv']);
-
-export function formatBytes(bytes) {
-  if (!bytes) return '0 B';
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-  if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-  return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
-}
 
 export function probeMedia(filePath) {
   return new Promise((resolve) => {

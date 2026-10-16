@@ -2,18 +2,12 @@
 // Permite reprodução direta no Safari (Modo Autônomo) e transcodificação/proxy inteligente via PC.
 
 import { detectFromName } from './detect.js';
+import { formatBytes } from './utils/format.js';
 
 const STORAGE_TORBOX_KEY = 'vrp:torbox_api_key';
 const STORAGE_GOFILE_KEY = 'vrp:gofile_api_key';
 const STORAGE_CLOUD_HISTORY = 'vrp:cloud_history';
 const MAX_HISTORY_ITEMS = 25;
-
-export function formatBytes(bytes) {
-  if (!bytes || isNaN(bytes)) return '0 B';
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-  if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-  return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
-}
 
 /**
  * ----------------------------------------------------
@@ -73,7 +67,7 @@ export function setGofileApiKey(key) {
   return cleanKey;
 }
 
-export function getActiveServerUrl(serverUrl) {
+function getActiveServerUrl(serverUrl) {
   if (serverUrl && typeof serverUrl === 'string') return serverUrl.replace(/\/+$/, '');
   try {
     const raw = localStorage.getItem('vrp:server_url');
@@ -362,7 +356,7 @@ export async function addTorboxWebDownload(link, apiKey, serverUrl = null) {
  * RESOLUÇÃO GOFILE
  * ----------------------------------------------------
  */
-export function extractGofileId(url) {
+function extractGofileId(url) {
   if (!url) return null;
   const str = url.trim();
   if (/^[a-zA-Z0-9_-]{4,20}$/.test(str)) return str;

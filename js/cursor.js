@@ -26,6 +26,15 @@ export class VirtualCursor {
       document.body.appendChild(this.el);
     }
 
+    this.mirrorEl = document.getElementById(this.cursorId + '-mirror');
+    if (!this.mirrorEl) {
+      this.mirrorEl = document.createElement('div');
+      this.mirrorEl.id = this.cursorId + '-mirror';
+      this.mirrorEl.className = 'virtual-cursor hidden';
+      this.mirrorEl.setAttribute('aria-hidden', 'true');
+      document.body.appendChild(this.mirrorEl);
+    }
+
     // Inicializa no centro da janela
     this.x = window.innerWidth / 2;
     this.y = window.innerHeight / 2;
@@ -66,17 +75,59 @@ export class VirtualCursor {
   }
 
   _updatePositionStyles() {
+    const player = document.getElementById('player');
+    const isHeadset = document.body.classList.contains('headset-mode') || player?.classList.contains('headset');
+    const isDominantLeft = player?.classList.contains('dominant-left') || document.body.classList.contains('dominant-left');
+    const isDominantRight = player?.classList.contains('dominant-right') || document.body.classList.contains('dominant-right');
+
     if (this.el) {
-      this.el.style.left = `${Math.round(this.x)}px`;
-      this.el.style.top = `${Math.round(this.y)}px`;
+      if (isHeadset) {
+        const halfW = window.innerWidth / 2;
+        const normalizedX = ((this.x % halfW) + halfW) % halfW;
+
+        if (isDominantRight) {
+          // Apenas olho direito
+          this.el.classList.add('hidden');
+          if (this.mirrorEl) {
+            this.mirrorEl.style.left = `${Math.round(normalizedX + halfW)}px`;
+            this.mirrorEl.style.top = `${Math.round(this.y)}px`;
+            if (this.visible) this.mirrorEl.classList.remove('hidden');
+            else this.mirrorEl.classList.add('hidden');
+          }
+        } else if (isDominantLeft) {
+          // Apenas olho esquerdo
+          this.el.style.left = `${Math.round(normalizedX)}px`;
+          this.el.style.top = `${Math.round(this.y)}px`;
+          if (this.visible) this.el.classList.remove('hidden');
+          else this.el.classList.add('hidden');
+          if (this.mirrorEl) this.mirrorEl.classList.add('hidden');
+        } else {
+          // Ambos os olhos
+          this.el.style.left = `${Math.round(normalizedX)}px`;
+          this.el.style.top = `${Math.round(this.y)}px`;
+          if (this.visible) this.el.classList.remove('hidden');
+          else this.el.classList.add('hidden');
+          if (this.mirrorEl) {
+            this.mirrorEl.style.left = `${Math.round(normalizedX + halfW)}px`;
+            this.mirrorEl.style.top = `${Math.round(this.y)}px`;
+            if (this.visible) this.mirrorEl.classList.remove('hidden');
+            else this.mirrorEl.classList.add('hidden');
+          }
+        }
+      } else {
+        this.el.style.left = `${Math.round(this.x)}px`;
+        this.el.style.top = `${Math.round(this.y)}px`;
+        if (this.visible) this.el.classList.remove('hidden');
+        if (this.mirrorEl) {
+          this.mirrorEl.classList.add('hidden');
+        }
+      }
     }
   }
 
   show() {
     this.visible = true;
-    if (this.el) {
-      this.el.classList.remove('hidden');
-    }
+    this._updatePositionStyles();
     this.resetHideTimer();
   }
 
@@ -85,6 +136,10 @@ export class VirtualCursor {
     if (this.el) {
       this.el.classList.add('hidden');
       this.el.classList.remove('clicking', 'hovering');
+    }
+    if (this.mirrorEl) {
+      this.mirrorEl.classList.add('hidden');
+      this.mirrorEl.classList.remove('clicking', 'hovering');
     }
     if (this.hideTimer) {
       clearTimeout(this.hideTimer);
@@ -391,14 +446,22 @@ export class VirtualCursor {
 
     if (justPressed) {
       this.show();
-      if (this.el) {
-        this.el.classList.add('clicking');
+      if (this.el) this.el.classList.add('clicking');
+      if (this.mirrorEl) this.mirrorEl.classList.add('clicking');
+
+      const player = document.getElementById('player');
+      const isHeadset = document.body.classList.contains('headset-mode') || player?.classList.contains('headset');
+      const isDominantRight = player?.classList.contains('dominant-right') || document.body.classList.contains('dominant-right');
+      let clickX = this.x;
+      if (isHeadset) {
+        const halfW = window.innerWidth / 2;
+        const normX = ((this.x % halfW) + halfW) % halfW;
+        clickX = isDominantRight ? (normX + halfW) : normX;
       }
-      this._performClick(this.x, this.y);
+      this._performClick(clickX, this.y);
     } else if (justReleased) {
-      if (this.el) {
-        this.el.classList.remove('clicking');
-      }
+      if (this.el) this.el.classList.remove('clicking');
+      if (this.mirrorEl) this.mirrorEl.classList.remove('clicking');
     }
   }
 
@@ -454,7 +517,16 @@ export class VirtualCursor {
   }
 
   _updateHoverState() {
-    let rawTarget = document.elementFromPoint(this.x, this.y);
+    const player = document.getElementById('player');
+    const isHeadset = document.body.classList.contains('headset-mode') || player?.classList.contains('headset');
+    const isDominantRight = player?.classList.contains('dominant-right') || document.body.classList.contains('dominant-right');
+    let targetX = this.x;
+    if (isHeadset) {
+      const halfW = window.innerWidth / 2;
+      const normX = ((this.x % halfW) + halfW) % halfW;
+      targetX = isDominantRight ? (normX + halfW) : normX;
+    }
+    let rawTarget = document.elementFromPoint(targetX, this.y);
     if (!rawTarget || !this.el) return;
 
     if (rawTarget.correspondingUseElement) {
@@ -469,6 +541,7 @@ export class VirtualCursor {
     );
 
     this.el.classList.toggle('hovering', isClickable);
+    if (this.mirrorEl) this.mirrorEl.classList.toggle('hovering', isClickable);
   }
 
   destroy() {
@@ -476,6 +549,9 @@ export class VirtualCursor {
     window.removeEventListener('resize', this._onResize);
     if (this.el && this.el.parentNode) {
       this.el.parentNode.removeChild(this.el);
+    }
+    if (this.mirrorEl && this.mirrorEl.parentNode) {
+      this.mirrorEl.parentNode.removeChild(this.mirrorEl);
     }
   }
 }
