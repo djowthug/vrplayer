@@ -42,25 +42,25 @@ jobs:
       - name: Build Unsigned iOS App
         working-directory: ios-native
         run: |
-          xcodebuild -project VRPlayer.xcodeproj \
+          xcodebuild archive \
+            -project VRPlayer.xcodeproj \
             -scheme VRPlayer \
             -configuration Release \
-            -destination "generic/platform=iOS" \
-            -derivedDataPath build \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGNING_REQUIRED=NO \
+            -sdk iphoneos \
+            -archivePath build/VRPlayer.xcarchive \
             CODE_SIGNING_ALLOWED=NO \
-            ENABLE_BITCODE=NO \
-            build
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_STYLE=Manual
 
       - name: Package .IPA for Sideloadly / AltStore
         working-directory: ios-native
         run: |
           mkdir -p build/Payload
-          cp -r build/Build/Products/Release-iphoneos/VRPlayer.app build/Payload/
+          cp -r build/VRPlayer.xcarchive/Products/Applications/*.app build/Payload/
           cd build
           zip -r -y -q VRPlayer.ipa Payload
-          echo "Tamanho do IPA gerado:"
+          echo "=== Tamanho do IPA gerado ==="
           ls -lh VRPlayer.ipa
 
       - name: Upload IPA Artifact
