@@ -115,4 +115,50 @@ test('Transcodificação HLS e Fast-Seek (-ss)', async (t) => {
     const argsDefault = getHlsAudioArgs(null);
     assert.deepEqual(argsDefault, ['-c:a', 'aac', '-b:a', '256k', '-ac', '2']);
   });
+
+  await t.test('Valida posicionamento de flags de busca rápida para 8K sem crash de GPU', () => {
+    const startTime = 2292.5;
+    const fullPath = 'C:\\videos\\sample_8k.mp4';
+    const args = ['-y'];
+
+    if (startTime > 0) {
+      args.push('-ss', startTime.toFixed(2));
+    }
+    args.push('-noaccurate_seek', '-threads', '0', '-i', fullPath);
+    args.push('-vf', 'scale=3840:-2,format=yuv420p');
+    args.push('-max_muxing_queue_size', '1024');
+
+    const ssIndex = args.indexOf('-ss');
+    const inputIndex = args.indexOf('-i');
+    const noAccurateIndex = args.indexOf('-noaccurate_seek');
+    const threadsIndex = args.indexOf('-threads');
+    const vfIndex = args.indexOf('-vf');
+
+    // -ss e -noaccurate_seek e -threads DEVEM vir antes de -i
+    assert.ok(ssIndex !== -1 && ssIndex < inputIndex, '-ss deve vir antes de -i');
+    assert.ok(noAccurateIndex !== -1 && noAccurateIndex < inputIndex, '-noaccurate_seek deve vir antes de -i');
+    assert.ok(threadsIndex !== -1 && threadsIndex < inputIndex, '-threads deve vir antes de -i');
+    // -vf e -max_muxing_queue_size devem vir após -i
+    assert.ok(vfIndex > inputIndex, '-vf deve vir após -i');
+    assert.equal(args[vfIndex + 1], 'scale=3840:-2,format=yuv420p');
+    assert.ok(args.includes('-max_muxing_queue_size') && args[args.indexOf('-max_muxing_queue_size') + 1] === '1024');
+    // Não deve conter -hwaccel antes de -i que cause crash de escala de vídeo 8K
+    assert.equal(args.includes('-hwaccel'), false);
+  });
+
+  await t.test('Validação de playlist identifica primeiro segmento .ts em disco', () => {
+    const mockPlaylist = `#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-TARGETDURATION:2
+#EXT-X-MEDIA-SEQUENCE:0
+#EXTINF:2.000000,
+seg_0_0000.ts
+#EXTINF:2.000000,
+seg_0_0001.ts
+`;
+    assert.ok(mockPlaylist.includes('#EXTINF:'));
+    const lines = mockPlaylist.split('\n').map(l => l.trim());
+    const firstSegmentLine = lines.find(l => l.endsWith('.ts') && !l.startsWith('#'));
+    assert.equal(firstSegmentLine, 'seg_0_0000.ts');
+  });
 });

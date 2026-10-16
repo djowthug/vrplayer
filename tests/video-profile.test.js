@@ -88,6 +88,18 @@ describe('VideoProfileManager', () => {
     assert.equal(saved.completed, true);
   });
 
+  it('deve zerar currentTime e marcar completed=true quando restarem menos de 10 segundos para acabar', () => {
+    const manager = new VideoProfileManager();
+    const video = { name: 'curta_metragem.mp4', size: 100000 };
+
+    // Vídeo de 100s aos 92s: 92% (abaixo de 97%), porém faltam apenas 8 segundos (<10s)
+    manager.saveProgress(video, 92, 100, true);
+
+    const saved = manager.get(video);
+    assert.equal(saved.currentTime, 0);
+    assert.equal(saved.completed, true);
+  });
+
   it('deve salvar e mesclar ajustes finos de perfil sem perder o progresso de tempo', () => {
     const manager = new VideoProfileManager();
     const video = { name: 'mal_nomeado.mp4', size: 777000 };
@@ -97,11 +109,18 @@ describe('VideoProfileManager', () => {
       projection: 'fisheye',
       stereo: 'sbs',
       fisheyeFov: 190,
-      exposure: 0.2
+      curvature: 0.45,
+      exposure: 0.2,
+      brightness: 0.1,
+      contrast: 1.1,
+      saturation: 1.2,
+      gamma: 0.95,
+      pitchOffset: 15,
+      spatialAudio: 'ambisonics-foa'
     });
 
-    // Atualiza apenas a curvatura depois
-    manager.saveProfileSettings(video, { curvature: 45 });
+    // Atualiza apenas a curvatura e contraste depois
+    manager.saveProfileSettings(video, { curvature: 0.6, contrast: 1.2 });
 
     const saved = manager.get(video);
     assert.equal(saved.currentTime, 210);
@@ -109,8 +128,14 @@ describe('VideoProfileManager', () => {
       projection: 'fisheye',
       stereo: 'sbs',
       fisheyeFov: 190,
+      curvature: 0.6,
       exposure: 0.2,
-      curvature: 45
+      brightness: 0.1,
+      contrast: 1.2,
+      saturation: 1.2,
+      gamma: 0.95,
+      pitchOffset: 15,
+      spatialAudio: 'ambisonics-foa'
     });
   });
 

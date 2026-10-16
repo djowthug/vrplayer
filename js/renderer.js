@@ -34,8 +34,13 @@ export class VRRenderer {
     this.video = video;
     this.spatialAudio = null;
 
+    const isIOS = typeof navigator !== 'undefined' && (
+      /iPad|iPhone|iPod/.test(navigator.userAgent || '') ||
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+    );
+
     const r = (this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' }));
-    r.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    r.setPixelRatio(Math.min(typeof window !== 'undefined' ? window.devicePixelRatio : 1, isIOS ? 2.0 : 2.5));
     // Cores são passadas sem conversão: o vídeo já está em sRGB.
     r.outputColorSpace = THREE.LinearSRGBColorSpace;
     container.appendChild(r.domElement);
@@ -46,9 +51,33 @@ export class VRRenderer {
 
     const tex = (this.texture = new THREE.VideoTexture(video));
     tex.colorSpace = THREE.NoColorSpace;
+    tex.generateMipmaps = false;
     tex.minFilter = THREE.LinearFilter;
     tex.magFilter = THREE.LinearFilter;
-    tex.generateMipmaps = false;
+
+    // Sincronização de Frames (requestVideoFrameCallback):
+    // Evita upload da textura 4K para a GPU a 60/120Hz sem necessidade.
+    if (typeof HTMLVideoElement !== 'undefined' && 'requestVideoFrameCallback' in HTMLVideoElement.prototype) {
+      tex.update = () => {};
+      const onFrame = () => {
+        tex.needsUpdate = true;
+        if (typeof video.requestVideoFrameCallback === 'function') {
+          video.requestVideoFrameCallback(onFrame);
+        }
+      };
+      if (typeof video.requestVideoFrameCallback === 'function') {
+        video.requestVideoFrameCallback(onFrame);
+      }
+      video.addEventListener('play', () => {
+        tex.needsUpdate = true;
+        if (typeof video.requestVideoFrameCallback === 'function') {
+          video.requestVideoFrameCallback(onFrame);
+        }
+      });
+      video.addEventListener('seeked', () => {
+        tex.needsUpdate = true;
+      });
+    }
 
     this.material = createVideoMaterial(tex);
     this.sphere = new THREE.Mesh(new THREE.SphereGeometry(100, 96, 64), this.material);

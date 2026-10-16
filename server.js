@@ -300,6 +300,39 @@ function setCorsHeaders(res) {
   res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
 }
 
+export const MAX_RANGE_CHUNK = 8 * 1024 * 1024; // 8MB
+
+export function parseRangeHeader(rangeHeader, fileSize) {
+  if (!rangeHeader) return null;
+  const parts = rangeHeader.replace(/bytes=/, '').split('-');
+  const start = parseInt(parts[0], 10);
+  let end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+
+  if (isNaN(start) || start >= fileSize || end >= fileSize || start > end) {
+    return { status: 416, headers: { 'Content-Range': `bytes */${fileSize}` } };
+  }
+
+  // Quando o cliente enviar header Range sem byte final (bytes=0- ou janelas gigantes) em arquivos grandes,
+  // limita o end a fatias máximas de 8MB (8 * 1024 * 1024) para agilidade no Safari iOS
+  if (!parts[1] || (end - start + 1) > MAX_RANGE_CHUNK) {
+    end = Math.min(start + MAX_RANGE_CHUNK - 1, fileSize - 1);
+  }
+
+  const chunkLength = end - start + 1;
+  return {
+    status: 206,
+    start,
+    end,
+    chunkLength,
+    headers: {
+      'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+      'Accept-Ranges': 'bytes',
+      'Content-Length': chunkLength,
+      'Cache-Control': 'no-store',
+    },
+  };
+}
+
 // Manipulador central de requisições
 function handleRequest(req, res) {
   setCorsHeaders(res);
@@ -866,9 +899,10 @@ function handleRequest(req, res) {
     return;
   }
 
-  // 3. Streaming de vídeo com suporte obrigatório a HTTP Range (/stream/...)
-  if (pathname.startsWith('/stream/')) {
-    const rel = pathname.slice('/stream/'.length);
+  // 3. Streaming de vídeo com suporte obrigatório a HTTP Range (/stream/... ou /video/...)
+  if (pathname.startsWith('/stream/') || pathname.startsWith('/video/')) {
+    const prefix = pathname.startsWith('/stream/') ? '/stream/' : '/video/';
+    const rel = pathname.slice(prefix.length);
     const fullPath = resolveVideoPath(rel);
 
     if (!fullPath || !fs.existsSync(fullPath)) {
@@ -887,35 +921,42 @@ function handleRequest(req, res) {
     }
     const contentType = MIME_TYPES[ext] || 'video/mp4';
 
-    const range = req.headers.range;
-    if (range) {
-      // Ex: Range: bytes=0-1024
-      const parts = range.replace(/bytes=/, '').split('-');
-      const start = parseInt(parts[0], 10);
-      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-
-      if (start >= fileSize || end >= fileSize || start > end) {
-        res.writeHead(416, { 'Content-Range': `bytes */${fileSize}` });
+    const rangeResult = parseRangeHeader(req.headers.range, fileSize);
+    if (rangeResult) {
+      if (rangeResult.status === 416) {
+        res.writeHead(416, rangeResult.headers);
         res.end();
         return;
       }
 
-      const chunkLength = end - start + 1;
       res.writeHead(206, {
-        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
-        'Accept-Ranges': 'bytes',
-        'Content-Length': chunkLength,
+        ...rangeResult.headers,
         'Content-Type': contentType,
       });
 
-      fs.createReadStream(fullPath, { start, end }).pipe(res);
+      const stream = fs.createReadStream(fullPath, {
+        start: rangeResult.start,
+        end: rangeResult.end,
+        highWaterMark: 512 * 1024,
+      });
+
+      // Prevenção de Streams Zumbis: encerra leitura quando o cliente abortar conexões Range concorrentes
+      req.on('close', () => {
+        stream.destroy();
+      });
+
+      stream.pipe(res);
     } else {
       res.writeHead(200, {
         'Content-Length': fileSize,
         'Accept-Ranges': 'bytes',
         'Content-Type': contentType,
       });
-      fs.createReadStream(fullPath).pipe(res);
+      const stream = fs.createReadStream(fullPath, { highWaterMark: 512 * 1024 });
+      req.on('close', () => {
+        stream.destroy();
+      });
+      stream.pipe(res);
     }
     return;
   }
@@ -1005,81 +1046,88 @@ const mdnsEnabled = process.env.MDNS_ENABLED !== 'false';
 const mdnsHostname = process.env.MDNS_HOSTNAME || 'vrplayer';
 const BIND_HOST = process.env.BIND_ADDRESS || process.env.HOST || '0.0.0.0';
 
-if (mdnsEnabled) {
-  try {
-    bonjour = new Bonjour();
-    bonjour.publish({
-      name: 'VR Player Server',
-      type: 'https',
-      port: config.httpsPort,
-      host: `${mdnsHostname}.local`,
-      txt: { app: 'vrplayer', ver: '1.0.0' },
+export function startServers() {
+  if (mdnsEnabled) {
+    try {
+      bonjour = new Bonjour();
+      bonjour.publish({
+        name: 'VR Player Server',
+        type: 'https',
+        port: config.httpsPort,
+        host: `${mdnsHostname}.local`,
+        txt: { app: 'vrplayer', ver: '1.0.0' },
+      });
+      bonjour.publish({
+        name: 'VR Player Cert',
+        type: 'http',
+        port: config.httpPort,
+        host: `${mdnsHostname}.local`,
+        txt: { app: 'vrplayer-cert', ver: '1.0.0' },
+      });
+    } catch (e) {
+      console.warn('⚠️ mDNS Bonjour não iniciado:', e.message);
+    }
+  }
+
+  console.log('\n======================================================');
+  console.log('   VR Player — Servidor Local de Streaming');
+  console.log('======================================================');
+  if (VIDEO_DIRS.length === 1) {
+    console.log(`📁 Pasta de vídeos: ${VIDEO_DIRS[0]}`);
+  } else {
+    console.log(`📁 Pastas de vídeos monitoradas (${VIDEO_DIRS.length}):`);
+    VIDEO_DIRS.forEach((d, idx) => console.log(`   [${idx + 1}] ${d}`));
+  }
+
+  // Detecta e exibe aceleração de GPU disponível
+  detectHardwareEncoder().then((gpu) => {
+    console.log(`⚡ Aceleração por Hardware: ${gpu.label}`);
+  }).catch(() => {});
+
+  if (hasCert) {
+    const options = {
+      key: fs.readFileSync(KEY_FILE),
+      cert: fs.readFileSync(CERT_FILE),
+    };
+    const httpsServer = https.createServer(options, handleRequest);
+    httpsServer.listen(config.httpsPort, BIND_HOST, () => {
+      console.log(`\n🔒 HTTPS ATIVO! Abra no Safari do iPhone:`);
+      console.log(`   ✨ https://${mdnsHostname}.local:${config.httpsPort}/  (Zero-Config mDNS)`);
+      for (const ip of localIPs) {
+        console.log(`   👉 https://${ip}:${config.httpsPort}/`);
+      }
     });
-    bonjour.publish({
-      name: 'VR Player Cert',
-      type: 'http',
-      port: config.httpPort,
-      host: `${mdnsHostname}.local`,
-      txt: { app: 'vrplayer-cert', ver: '1.0.0' },
+
+    // Servidor HTTP simples para redirecionar ou servir o certificado de instalação
+    const httpServer = http.createServer((req, res) => {
+      const url = new URL(req.url, 'http://localhost');
+      if (url.pathname === '/ca.crt' || url.pathname === '/install-cert') {
+        handleRequest(req, res);
+      } else {
+        const host = (req.headers.host || '').split(':')[0] || primaryIP;
+        res.writeHead(301, { Location: `https://${host}:${config.httpsPort}${req.url}` });
+        res.end();
+      }
     });
-  } catch (e) {
-    console.warn('⚠️ mDNS Bonjour não iniciado:', e.message);
+    httpServer.listen(config.httpPort, BIND_HOST, () => {
+      console.log(`\n📲 Link rápido para instalar o Certificado no iPhone (abra no Safari):`);
+      console.log(`   ✨ http://${mdnsHostname}.local:${config.httpPort}/install-cert  (Zero-Config)`);
+      for (const ip of localIPs) {
+        console.log(`   👉 http://${ip}:${config.httpPort}/install-cert`);
+      }
+    });
+  } else {
+    const httpServer = http.createServer(handleRequest);
+    httpServer.listen(config.httpPort, BIND_HOST, () => {
+      console.log(`\n⚠️  Modo HTTP (sem giroscópio no iPhone por falta de HTTPS).`);
+      console.log(`   Acesse: http://${mdnsHostname}.local:${config.httpPort}/ ou http://${primaryIP}:${config.httpPort}/`);
+      console.log(`\n💡 Para ativar HTTPS e liberar o giroscópio no iPhone:`);
+      console.log(`   Execute no terminal: npm run cert\n`);
+    });
   }
 }
 
-console.log('\n======================================================');
-console.log('   VR Player — Servidor Local de Streaming');
-console.log('======================================================');
-if (VIDEO_DIRS.length === 1) {
-  console.log(`📁 Pasta de vídeos: ${VIDEO_DIRS[0]}`);
-} else {
-  console.log(`📁 Pastas de vídeos monitoradas (${VIDEO_DIRS.length}):`);
-  VIDEO_DIRS.forEach((d, idx) => console.log(`   [${idx + 1}] ${d}`));
-}
-
-// Detecta e exibe aceleração de GPU disponível
-detectHardwareEncoder().then((gpu) => {
-  console.log(`⚡ Aceleração por Hardware: ${gpu.label}`);
-}).catch(() => {});
-
-if (hasCert) {
-  const options = {
-    key: fs.readFileSync(KEY_FILE),
-    cert: fs.readFileSync(CERT_FILE),
-  };
-  const httpsServer = https.createServer(options, handleRequest);
-  httpsServer.listen(config.httpsPort, BIND_HOST, () => {
-    console.log(`\n🔒 HTTPS ATIVO! Abra no Safari do iPhone:`);
-    console.log(`   ✨ https://${mdnsHostname}.local:${config.httpsPort}/  (Zero-Config mDNS)`);
-    for (const ip of localIPs) {
-      console.log(`   👉 https://${ip}:${config.httpsPort}/`);
-    }
-  });
-
-  // Servidor HTTP simples para redirecionar ou servir o certificado de instalação
-  const httpServer = http.createServer((req, res) => {
-    const url = new URL(req.url, 'http://localhost');
-    if (url.pathname === '/ca.crt' || url.pathname === '/install-cert') {
-      handleRequest(req, res);
-    } else {
-      const host = (req.headers.host || '').split(':')[0] || primaryIP;
-      res.writeHead(301, { Location: `https://${host}:${config.httpsPort}${req.url}` });
-      res.end();
-    }
-  });
-  httpServer.listen(config.httpPort, BIND_HOST, () => {
-    console.log(`\n📲 Link rápido para instalar o Certificado no iPhone (abra no Safari):`);
-    console.log(`   ✨ http://${mdnsHostname}.local:${config.httpPort}/install-cert  (Zero-Config)`);
-    for (const ip of localIPs) {
-      console.log(`   👉 http://${ip}:${config.httpPort}/install-cert`);
-    }
-  });
-} else {
-  const httpServer = http.createServer(handleRequest);
-  httpServer.listen(config.httpPort, BIND_HOST, () => {
-    console.log(`\n⚠️  Modo HTTP (sem giroscópio no iPhone por falta de HTTPS).`);
-    console.log(`   Acesse: http://${mdnsHostname}.local:${config.httpPort}/ ou http://${primaryIP}:${config.httpPort}/`);
-    console.log(`\n💡 Para ativar HTTPS e liberar o giroscópio no iPhone:`);
-    console.log(`   Execute no terminal: npm run cert\n`);
-  });
+const isDirectRun = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename);
+if (isDirectRun && process.env.NODE_ENV !== 'test') {
+  startServers();
 }

@@ -1,6 +1,6 @@
 // Service worker: guarda o app em cache para abrir offline.
 // Aumente a versão sempre que publicar mudanças.
-const CACHE = 'vrplayer-v15';
+const CACHE = 'vrplayer-v16';
 const ASSETS = [
   './',
   'index.html',
@@ -41,10 +41,28 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   const req = e.request;
   if (req.method !== 'GET') return;
-  
+
+  // Bypass imediato para qualquer requisição com header Range (evita travar Safari iOS)
+  if (req.headers && req.headers.has('range')) return;
+
   const url = new URL(req.url);
   if (url.origin !== location.origin) return;
-  if (url.pathname.startsWith('/stream/') || url.pathname.startsWith('/hls/') || url.pathname.startsWith('/api/')) return;
+
+  const pathname = url.pathname.toLowerCase();
+  // Bypass total para rotas de mídia e streams de mídia
+  if (
+    pathname.startsWith('/video/') ||
+    pathname.startsWith('/stream/') ||
+    pathname.startsWith('/api/stream') ||
+    pathname.startsWith('/hls/') ||
+    pathname.startsWith('/api/') ||
+    pathname.endsWith('.m3u8') ||
+    pathname.endsWith('.ts') ||
+    pathname.endsWith('.mp4') ||
+    pathname.endsWith('.mkv')
+  ) {
+    return;
+  }
 
   e.respondWith(
     fetch(req)

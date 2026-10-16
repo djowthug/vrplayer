@@ -1,0 +1,71 @@
+name: Build Native iOS App (.IPA)
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - 'ios-native/**'
+      - '.github/workflows/build-ios.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: "build-ios"
+  cancel-in-progress: true
+
+jobs:
+  build-ipa:
+    name: Build Unsigned IPA for Sideloading
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          if [ -d "/Applications/Xcode_15.4.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_15.4.app
+          elif [ -d "/Applications/Xcode_16.0.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_16.0.app
+          fi
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: |
+          brew install xcodegen
+
+      - name: Generate Xcode Project
+        working-directory: ios-native
+        run: |
+          xcodegen generate
+
+      - name: Build Unsigned iOS App
+        working-directory: ios-native
+        run: |
+          xcodebuild -project VRPlayer.xcodeproj \
+            -scheme VRPlayer \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            ENABLE_BITCODE=NO \
+            build
+
+      - name: Package .IPA for Sideloadly / AltStore
+        working-directory: ios-native
+        run: |
+          mkdir -p build/Payload
+          cp -r build/Build/Products/Release-iphoneos/VRPlayer.app build/Payload/
+          cd build
+          zip -r -y -q VRPlayer.ipa Payload
+          echo "Tamanho do IPA gerado:"
+          ls -lh VRPlayer.ipa
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VRPlayer-iOS-IPA
+          path: ios-native/build/VRPlayer.ipa
+          retention-days: 14

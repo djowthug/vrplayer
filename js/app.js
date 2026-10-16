@@ -407,6 +407,29 @@ const state = {
   hlsSeekEpoch: 0,
 };
 
+let isHlsSeeking = false;
+let hlsSeekingUnlockTimer = null;
+
+function lockHlsSeeking() {
+  isHlsSeeking = true;
+  state.isSeekingHls = true;
+  if (hlsSeekingUnlockTimer) {
+    clearTimeout(hlsSeekingUnlockTimer);
+    hlsSeekingUnlockTimer = null;
+  }
+}
+
+function unlockHlsSeeking(delayMs = 1500) {
+  if (hlsSeekingUnlockTimer) {
+    clearTimeout(hlsSeekingUnlockTimer);
+  }
+  hlsSeekingUnlockTimer = setTimeout(() => {
+    isHlsSeeking = false;
+    state.isSeekingHls = false;
+    hlsSeekingUnlockTimer = null;
+  }, delayMs);
+}
+
 let vr = null;
 let look = null;
 let gamepad = null;
@@ -853,9 +876,32 @@ async function openVideoSource({
 
   video.crossOrigin = 'anonymous';
 
+  // Obter perfil e tempo salvo ANTES de anexar a fonte do vídeo (evita ping-pong no HLS)
+  const serverUrl = getCurrentServerUrl();
+  const currentVideoItem = { name, size, url, originalPath };
+  state.currentVideoItem = currentVideoItem;
+
+  let saved = null;
+  try {
+    saved = profileManager.get(currentVideoItem) || (await loadVideoProfile(state.videoKey, serverUrl));
+  } catch {}
+  const legacyProg = getSavedVideoProgress();
+  const resumeTime = (saved && typeof saved.currentTime === 'number' && saved.currentTime > 5 && !saved.completed)
+    ? saved.currentTime
+    : (legacyProg ? legacyProg.time : 0);
+
   if (state.isHls) {
-    hud('Carregando streaming HLS...');
-    await attachHlsSource(video, url);
+    lockHlsSeeking();
+    let launchHlsUrl = url;
+    if (resumeTime > 5) {
+      state.hlsOffset = resumeTime;
+      const sep = launchHlsUrl.includes('?') ? '&' : '?';
+      launchHlsUrl = `${launchHlsUrl}${sep}start=${resumeTime.toFixed(2)}&ss=${resumeTime.toFixed(2)}`;
+      hud(`Retomando de ${fmtTime(resumeTime)} (HLS)...`);
+    } else {
+      hud('Carregando streaming HLS...');
+    }
+    await attachHlsSource(video, launchHlsUrl);
   } else {
     video.src = url;
     video.load();
@@ -918,13 +964,8 @@ async function openVideoSource({
     }).catch(() => {});
   }
 
-  const serverUrl = getCurrentServerUrl();
-  const currentVideoItem = { name, size, url, originalPath };
-  state.currentVideoItem = currentVideoItem;
-
   // 1. Perfil Salvo do Usuário (Prioridade Máxima):
   // Se saved?.profile existir, pula a análise de Canvas do detect.js e aplica imediatamente
-  const saved = profileManager.get(currentVideoItem) || (await loadVideoProfile(state.videoKey, serverUrl));
   const hasSavedProfile = !!(saved && saved.profile && (saved.profile.projection || saved.profile.stereo || saved.profile.layout));
 
   if (hasSavedProfile) {
@@ -946,7 +987,7 @@ async function openVideoSource({
     } else {
       const first = guessFormat(name, video.videoWidth, video.videoHeight, null);
       applyFormat({ ...first, swap: false }, captionFor(first.source));
-      if (first.source !== 'nome') {
+      if (first.source !== 'nome' && !state.isHls) {
         const analysis = await analyzeVideo();
         if (analysis && analysis.valid) {
           refineFromAnalysis(analysis);
@@ -980,29 +1021,32 @@ async function openVideoSource({
   }
 
   // Retomar reprodução do ponto onde parou (Perfil Híbrido com fallback legado)
-  const legacyProg = getSavedVideoProgress();
-  const resumeTime = (saved && typeof saved.currentTime === 'number' && saved.currentTime > 5 && !saved.completed)
-    ? saved.currentTime
-    : (legacyProg ? legacyProg.time : 0);
-
   const d = (state.isHls && state.totalDuration > 0) ? state.totalDuration : video.duration;
   if (resumeTime > 5 && (!isFinite(d) || resumeTime < d - 10)) {
     if (state.isHls) {
-      seekHls(resumeTime);
+      // Em modo HLS já iniciamos no ponto de partida via ?start=${resumeTime}&ss=${resumeTime}
+      // e registramos state.hlsOffset = resumeTime.
+      // NÃO alterar video.currentTime para evitar disparos de seeking em cascata no Safari!
+      lastShownSecond = -1;
+      updateTimeUI(true);
+      hud(`Retomando de ${fmtTime(resumeTime)}`, 2500);
+      toast(`Continuando reprodução de ${fmtTime(resumeTime)}`);
+      showResumeBanner(video, currentVideoItem, resumeTime);
     } else {
       try { video.currentTime = resumeTime; } catch {}
+      lastShownSecond = -1;
+      updateTimeUI(true);
+      hud(`Retomando de ${fmtTime(resumeTime)}`, 2500);
+      toast(`Continuando reprodução de ${fmtTime(resumeTime)}`);
+      showResumeBanner(video, currentVideoItem, resumeTime);
     }
-    lastShownSecond = -1;
-    updateTimeUI(true);
-    hud(`Retomando de ${fmtTime(resumeTime)}`, 2500);
-    toast(`Continuando reprodução de ${fmtTime(resumeTime)}`);
-    showResumeBanner(video, currentVideoItem, resumeTime);
   }
 
   setControlsVisible(true);
 }
 
 async function analyzeVideo() {
+  if (state.isHls) return null;
   try {
     if (video.readyState < 2) await Promise.race([waitFor(video, 'loadeddata', 2500), sleep(2500)]);
     if (video.readyState < 2) return null;
@@ -1406,6 +1450,7 @@ function getProgressStorageKey() {
 }
 
 function saveVideoProgress(t, d, immediate = false) {
+  if (state.isHls && (isHlsSeeking || state.isSeekingHls)) return;
   const key = getProgressStorageKey();
   if (!isFinite(t) || !isFinite(d) || d <= 0) return;
   const isEnd = t >= d - 10 || (t / d) > 0.92;
@@ -1435,6 +1480,7 @@ function saveVideoProgress(t, d, immediate = false) {
 
 function saveCurrentVideoProfile(immediate = false) {
   if (!state.videoKey) return;
+  if (state.isHls && (isHlsSeeking || state.isSeekingHls)) return;
   const d = (state.isHls && state.totalDuration > 0) ? state.totalDuration : video.duration;
   const t = (state.isHls ? state.hlsOffset : 0) + (video.currentTime || 0);
   const isEnd = (isFinite(d) && d > 0 && isFinite(t)) ? (t >= d - 10 || (t / d) > 0.92) : false;
@@ -3080,7 +3126,7 @@ async function seekHls(targetTime) {
   clearTimeout(hlsSeekDebounceTimer);
 
   hud(`Buscando ${fmtTime(clampedTarget)}...`, 5000);
-  state.isSeekingHls = true;
+  lockHlsSeeking();
   state.hlsOffset = clampedTarget;
 
   // Atualização visual imediata do display e da barra
@@ -3101,6 +3147,9 @@ async function seekHls(targetTime) {
     const res = await fetch(seekUrl, { signal: AbortSignal.timeout(18000) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
+    if (data && data.superseded) {
+      return;
+    }
 
     if (data.duration && (!state.totalDuration || state.totalDuration <= 0)) {
       state.totalDuration = data.duration;
@@ -3127,11 +3176,12 @@ async function seekHls(targetTime) {
     }
 
     hud(`Ponto: ${fmtTime(clampedTarget)}`, 1300);
+    // Destrava de segurança caso canplay/playing demore a disparar
+    unlockHlsSeeking(3500);
   } catch (err) {
     console.error('[HLS Seek] Falha ao reiniciar FFmpeg:', err);
     hud('Falha ao buscar no vídeo', 2500);
-  } finally {
-    state.isSeekingHls = false;
+    unlockHlsSeeking(500);
   }
 }
 
@@ -3307,12 +3357,20 @@ video.addEventListener('play', () => {
   acquireWakeLock();
   setAudioSessionType('playback');
 });
+video.addEventListener('canplay', () => {
+  if (state.isHls) {
+    unlockHlsSeeking(1500);
+  }
+});
 video.addEventListener('playing', () => {
+  if (state.isHls) {
+    unlockHlsSeeking(1500);
+  }
   if (!state.unlocked) {
     state.unlocked = true;
     look.immediateTap = false;
   }
-  if (state.autoAnalyzePending) {
+  if (state.autoAnalyzePending && !state.isHls) {
     state.autoAnalyzePending = false;
     setTimeout(() => {
       const a = analyzeFrame(video);
@@ -3360,7 +3418,16 @@ video.addEventListener('durationchange', () => {
 video.addEventListener('timeupdate', () => {
   updateTimeUI();
 });
+video.addEventListener('seeking', () => {
+  if (state.isHls && (isHlsSeeking || state.isSeekingHls)) {
+    // Ignora eventos seeking disparados pelo elemento <video> durante busca HLS
+    return;
+  }
+});
 video.addEventListener('seeked', () => {
+  if (state.isHls && (isHlsSeeking || state.isSeekingHls)) {
+    return;
+  }
   lastShownSecond = -1;
   updateTimeUI(true);
 });
@@ -3374,7 +3441,7 @@ let lastShownSecond = -1;
 let lastProgressSaveTime = 0;
 
 function updateTimeUI(force = false) {
-  if (state.scrubbing || state.isSeekingHls) return;
+  if (state.scrubbing || state.isSeekingHls || (state.isHls && isHlsSeeking)) return;
   const d = (state.isHls && state.totalDuration > 0) ? state.totalDuration : video.duration;
   const t = (state.isHls ? state.hlsOffset : 0) + (video.currentTime || 0);
 
