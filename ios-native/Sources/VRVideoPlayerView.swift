@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import SceneKit
 import AVFoundation
 import CoreMotion
@@ -194,7 +195,7 @@ public struct SCNVRViewContainer: UIViewRepresentable {
     public func makeUIView(context: Context) -> SCNView {
         let scnView = SCNView(frame: .zero)
         scnView.scene = scene
-        if pointOfView.camera != nil && (pointOfView.scene === scene || scene.rootNode.childNodes.contains(pointOfView)) {
+        if pointOfView.camera != nil && (pointOfView.parent === scene.rootNode || scene.rootNode.childNodes.contains(pointOfView)) {
             scnView.pointOfView = pointOfView
         }
         scnView.backgroundColor = .black
@@ -208,7 +209,7 @@ public struct SCNVRViewContainer: UIViewRepresentable {
         if uiView.scene !== scene {
             uiView.scene = scene
         }
-        if pointOfView.camera != nil && (pointOfView.scene === scene || scene.rootNode.childNodes.contains(pointOfView)) {
+        if pointOfView.camera != nil && (pointOfView.parent === scene.rootNode || scene.rootNode.childNodes.contains(pointOfView)) {
             if uiView.pointOfView !== pointOfView {
                 uiView.pointOfView = pointOfView
             }
@@ -1489,7 +1490,11 @@ public struct VRVideoPlayerView: View {
                             vm.player?.seek(
                                 to: CMTime(seconds: vm.currentTime, preferredTimescale: 600),
                                 toleranceBefore: .zero, toleranceAfter: .zero
-                            ) { [weak vm] _ in vm?.isSeeking = false }
+                            ) { _ in
+                                DispatchQueue.main.async {
+                                    vm.isSeeking = false
+                                }
+                            }
                         }
                         vm.resetControlsTimer()
                     }
@@ -1695,7 +1700,7 @@ public struct VRVideoPlayerView: View {
         if #available(iOS 16.0, *) {
             if let windowScene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first {
                 let preferences = UIWindowScene.GeometryPreferences.iOS(interfaceOrientations: .landscapeRight)
-                windowScene.requestGeometryUpdate(preferences) { _ in }
+                windowScene.requestGeometryUpdate(preferences)
                 windowScene.windows.first?.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
             }
         } else {
@@ -1709,7 +1714,7 @@ public struct VRVideoPlayerView: View {
         if #available(iOS 16.0, *) {
             if let windowScene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first {
                 let preferences = UIWindowScene.GeometryPreferences.iOS(interfaceOrientations: .allButUpsideDown)
-                windowScene.requestGeometryUpdate(preferences) { _ in }
+                windowScene.requestGeometryUpdate(preferences)
                 windowScene.windows.first?.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
             }
         } else {
