@@ -125,10 +125,15 @@ public struct VideoItem: Identifiable, Hashable, Codable {
     public func fullStreamURL(baseURL: String) -> URL? {
         let trimmedBase = baseURL.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         if url.lowercased().hasPrefix("http://") || url.lowercased().hasPrefix("https://") {
-            return URL(string: url)
+            if let direct = URL(string: url) { return direct }
+            if let encoded = url.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) { return URL(string: encoded) }
+            return nil
         }
         let cleanRel = url.hasPrefix("/") ? String(url.dropFirst()) : url
-        return URL(string: "\(trimmedBase)/\(cleanRel)")
+        let combined = "\(trimmedBase)/\(cleanRel)"
+        if let direct = URL(string: combined) { return direct }
+        if let encoded = combined.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) { return URL(string: encoded) }
+        return nil
     }
     
     /// Resolve a URL absoluta da miniatura (thumbnail) baseada na URL do servidor configurado
@@ -136,10 +141,15 @@ public struct VideoItem: Identifiable, Hashable, Codable {
         guard let thumbUrl = thumbUrl, !thumbUrl.isEmpty else { return nil }
         let trimmedBase = baseURL.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         if thumbUrl.lowercased().hasPrefix("http://") || thumbUrl.lowercased().hasPrefix("https://") {
-            return URL(string: thumbUrl)
+            if let direct = URL(string: thumbUrl) { return direct }
+            if let encoded = thumbUrl.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) { return URL(string: encoded) }
+            return nil
         }
         let cleanRel = thumbUrl.hasPrefix("/") ? String(thumbUrl.dropFirst()) : thumbUrl
-        return URL(string: "\(trimmedBase)/\(cleanRel)")
+        let combined = "\(trimmedBase)/\(cleanRel)"
+        if let direct = URL(string: combined) { return direct }
+        if let encoded = combined.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) { return URL(string: encoded) }
+        return nil
     }
     
     /// Detecta a projeção padrão recomendada

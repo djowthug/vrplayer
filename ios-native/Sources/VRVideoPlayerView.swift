@@ -192,9 +192,11 @@ public struct SCNVRViewContainer: UIViewRepresentable {
     public let pointOfView: SCNNode
     
     public func makeUIView(context: Context) -> SCNView {
-        let scnView = SCNView()
+        let scnView = SCNView(frame: .zero)
         scnView.scene = scene
-        scnView.pointOfView = pointOfView
+        if pointOfView.camera != nil && (pointOfView.scene === scene || scene.rootNode.childNodes.contains(pointOfView)) {
+            scnView.pointOfView = pointOfView
+        }
         scnView.backgroundColor = .black
         scnView.preferredFramesPerSecond = 60
         scnView.rendersContinuously = true
@@ -203,8 +205,14 @@ public struct SCNVRViewContainer: UIViewRepresentable {
     }
     
     public func updateUIView(_ uiView: SCNView, context: Context) {
-        uiView.scene = scene
-        uiView.pointOfView = pointOfView
+        if uiView.scene !== scene {
+            uiView.scene = scene
+        }
+        if pointOfView.camera != nil && (pointOfView.scene === scene || scene.rootNode.childNodes.contains(pointOfView)) {
+            if uiView.pointOfView !== pointOfView {
+                uiView.pointOfView = pointOfView
+            }
+        }
     }
 }
 
@@ -218,18 +226,32 @@ public final class VRMotionController: ObservableObject {
     public func start(onUpdate: ((Float, Float, Float) -> Void)? = nil) {
         guard motionManager.isDeviceMotionAvailable else { return }
         motionManager.deviceMotionUpdateInterval = 1.0 / 60.0
-        motionManager.startDeviceMotionUpdates(using: .xArbitraryZVertical, to: .main) { [weak self] motion, _ in
+        
+        let availableFrames = CMMotionManager.availableAttitudeReferenceFrames()
+        let handler: CMDeviceMotionHandler = { [weak self] motion, _ in
             guard let self = self, let motion = motion else { return }
             let attitude = motion.attitude
             let pitch = Float(-attitude.roll) + self.pitchOffset
             let yaw = Float(-attitude.yaw) + self.yawOffset
             let roll = Float(-attitude.pitch)
-            onUpdate?(pitch, yaw, roll)
+            DispatchQueue.main.async {
+                onUpdate?(pitch, yaw, roll)
+            }
+        }
+        
+        if availableFrames.contains(.xArbitraryZVertical) {
+            motionManager.startDeviceMotionUpdates(using: .xArbitraryZVertical, to: .main, withHandler: handler)
+        } else if availableFrames.contains(.xArbitraryCorrectedZVertical) {
+            motionManager.startDeviceMotionUpdates(using: .xArbitraryCorrectedZVertical, to: .main, withHandler: handler)
+        } else {
+            motionManager.startDeviceMotionUpdates(to: .main, withHandler: handler)
         }
     }
     
     public func stop() {
-        motionManager.stopDeviceMotionUpdates()
+        if motionManager.isDeviceMotionActive {
+            motionManager.stopDeviceMotionUpdates()
+        }
     }
     
     public func recenter() {
@@ -329,12 +351,12 @@ public final class VRPlayerViewModel: ObservableObject {
 
     #pragma body
     float3 rgb = _output.color.rgb;
-    rgb = rgb * pow(2.0, exposureVal);
-    rgb = (rgb - 0.5) * contrastVal + 0.5;
+    rgb = rgb * exp2(exposureVal);
+    rgb = (rgb - float3(0.5)) * contrastVal + float3(0.5);
     float luma = dot(rgb, float3(0.2126, 0.7152, 0.0722));
     rgb = mix(float3(luma), rgb, saturationVal);
-    rgb = pow(max(rgb, float3(0.0)), float3(1.0 / max(gammaVal, 0.01)));
-    _output.color.rgb = clamp(rgb, 0.0, 1.0);
+    rgb = pow(max(rgb, float3(0.0001)), float3(1.0 / max(gammaVal, 0.01)));
+    _output.color.rgb = clamp(rgb, float3(0.0), float3(1.0));
     """
     
     public init(video: VideoItem, serverBaseURL: String) {
@@ -343,13 +365,18 @@ public final class VRPlayerViewModel: ObservableObject {
         self.projection = video.initialProjection
         self.stereo = video.initialStereo
         self.duration = (video.duration ?? 0) > 0 ? (video.duration ?? 1.0) : 1.0
+        
+        // Garante que câmeras e nós estejam no grafo de cena antes do makeUIView ser executado pelo SwiftUI
+        setupScenes()
     }
     
     public func setup() {
         UIApplication.shared.isIdleTimerDisabled = true
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback, options: [])
         try? AVAudioSession.sharedInstance().setActive(true)
-        setupScenes()
+        if leftDomeNode.geometry == nil {
+            setupScenes()
+        }
         setupPlayer()
         setupMotion()
         resetControlsTimer()
@@ -376,23 +403,27 @@ public final class VRPlayerViewModel: ObservableObject {
     }
     
     private func setupScenes() {
-        let leftCamera = SCNCamera()
-        leftCamera.zNear = 0.1
-        leftCamera.zFar = 200.0
-        leftCamera.fieldOfView = currentFOV
-        leftCameraNode.camera = leftCamera
-        leftCameraNode.position = SCNVector3(x: -0.032, y: 0, z: 0)
-        leftScene.rootNode.addChildNode(leftCameraNode)
-        leftScene.rootNode.addChildNode(leftDomeNode)
+        if leftCameraNode.camera == nil {
+            let leftCamera = SCNCamera()
+            leftCamera.zNear = 0.1
+            leftCamera.zFar = 200.0
+            leftCamera.fieldOfView = currentFOV
+            leftCameraNode.camera = leftCamera
+            leftCameraNode.position = SCNVector3(x: -0.032, y: 0, z: 0)
+            leftScene.rootNode.addChildNode(leftCameraNode)
+            leftScene.rootNode.addChildNode(leftDomeNode)
+        }
         
-        let rightCamera = SCNCamera()
-        rightCamera.zNear = 0.1
-        rightCamera.zFar = 200.0
-        rightCamera.fieldOfView = currentFOV
-        rightCameraNode.camera = rightCamera
-        rightCameraNode.position = SCNVector3(x: 0.032, y: 0, z: 0)
-        rightScene.rootNode.addChildNode(rightCameraNode)
-        rightScene.rootNode.addChildNode(rightDomeNode)
+        if rightCameraNode.camera == nil {
+            let rightCamera = SCNCamera()
+            rightCamera.zNear = 0.1
+            rightCamera.zFar = 200.0
+            rightCamera.fieldOfView = currentFOV
+            rightCameraNode.camera = rightCamera
+            rightCameraNode.position = SCNVector3(x: 0.032, y: 0, z: 0)
+            rightScene.rootNode.addChildNode(rightCameraNode)
+            rightScene.rootNode.addChildNode(rightDomeNode)
+        }
         
         rebuildGeometry()
         rebuildEnvironment()
@@ -494,32 +525,43 @@ public final class VRPlayerViewModel: ObservableObject {
     public func updateMaterials() {
         guard let avPlayer = player else { return }
         
+        let hasCustomGrading = (exposure != 0.0 || contrast != 1.0 || saturation != 1.0 || gamma != 1.0)
+        
         let leftMat = SCNMaterial()
         leftMat.lightingModel = .constant
         leftMat.isDoubleSided = true
         leftMat.diffuse.contents = avPlayer
         leftMat.diffuse.contentsTransform = calculateTransform(isRightEye: false)
-        leftMat.shaderModifiers = [.fragment: colorGradingShader]
+        if hasCustomGrading {
+            leftMat.shaderModifiers = [.fragment: colorGradingShader]
+        }
         
         let rightMat = SCNMaterial()
         rightMat.lightingModel = .constant
         rightMat.isDoubleSided = true
         rightMat.diffuse.contents = avPlayer
         rightMat.diffuse.contentsTransform = calculateTransform(isRightEye: true)
-        rightMat.shaderModifiers = [.fragment: colorGradingShader]
+        if hasCustomGrading {
+            rightMat.shaderModifiers = [.fragment: colorGradingShader]
+        }
         
         leftDomeNode.geometry?.materials = [leftMat]
         rightDomeNode.geometry?.materials = [rightMat]
-        applyShaderUniforms()
+        
+        if hasCustomGrading {
+            applyShaderUniforms()
+        }
     }
     
     public func applyShaderUniforms() {
         let mats = (leftDomeNode.geometry?.materials ?? []) + (rightDomeNode.geometry?.materials ?? [])
         for mat in mats {
-            mat.setValue(exposure, forKey: "exposureVal")
-            mat.setValue(contrast, forKey: "contrastVal")
-            mat.setValue(saturation, forKey: "saturationVal")
-            mat.setValue(gamma, forKey: "gammaVal")
+            if mat.shaderModifiers?[.fragment] != nil {
+                mat.setValue(NSNumber(value: exposure), forKey: "exposureVal")
+                mat.setValue(NSNumber(value: contrast), forKey: "contrastVal")
+                mat.setValue(NSNumber(value: saturation), forKey: "saturationVal")
+                mat.setValue(NSNumber(value: gamma), forKey: "gammaVal")
+            }
         }
     }
     
@@ -1650,18 +1692,29 @@ public struct VRVideoPlayerView: View {
     
     private func forceLandscapeOrientation() {
         AppDelegate.orientationLock = .landscape
-        UIDevice.current.setValue(UIInterfaceOrientation.landscapeRight.rawValue, forKey: "orientation")
-        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
-            windowScene.requestGeometryUpdate(.iOS(interfaceOrientations: .landscapeRight))
-            windowScene.windows.first?.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
+        if #available(iOS 16.0, *) {
+            if let windowScene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first {
+                let preferences = UIWindowScene.GeometryPreferences.iOS(interfaceOrientations: .landscapeRight)
+                windowScene.requestGeometryUpdate(preferences) { _ in }
+                windowScene.windows.first?.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
+            }
+        } else {
+            UIDevice.current.setValue(UIInterfaceOrientation.landscapeRight.rawValue, forKey: "orientation")
+            UIViewController.attemptRotationToDeviceOrientation()
         }
     }
     
     private func unlockOrientation() {
         AppDelegate.orientationLock = .allButUpsideDown
-        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
-            windowScene.requestGeometryUpdate(.iOS(interfaceOrientations: .allButUpsideDown))
-            windowScene.windows.first?.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
+        if #available(iOS 16.0, *) {
+            if let windowScene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first {
+                let preferences = UIWindowScene.GeometryPreferences.iOS(interfaceOrientations: .allButUpsideDown)
+                windowScene.requestGeometryUpdate(preferences) { _ in }
+                windowScene.windows.first?.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
+            }
+        } else {
+            UIDevice.current.setValue(UIInterfaceOrientation.portrait.rawValue, forKey: "orientation")
+            UIViewController.attemptRotationToDeviceOrientation()
         }
     }
     
